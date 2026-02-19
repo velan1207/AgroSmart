@@ -1,0 +1,60 @@
+name: crop_monitor
+description: "24×7 IoT-Based Crop Stress Monitoring and Smart Irrigation System"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  
+  # Firebase packages
+  firebase_core: ^3.9.0
+  firebase_database: ^11.3.1
+  firebase_auth: ^5.5.1
+  
+  # State management
+  provider: ^6.1.2
+  
+  # Charts for data visualization
+  fl_chart: ^0.70.2
+  
+  # Local storage
+  shared_preferences: ^2.3.5
+  
+  # Date formatting
+  intl: ^0.20.2
+  
+  # Connectivity
+  connectivity_plus: ^7.0.0
+  
+  # Loading indicators
+  shimmer: ^3.0.0
+  
+  # Icons
+  flutter_animate: ^4.5.2
+  
+  # Google Fonts
+  google_fonts: ^6.2.1
+  
+  # Local notifications
+  flutter_local_notifications: ^18.0.1
+  http: ^1.6.0
+  url_launcher: ^6.3.2
+  flutter_tts: ^4.2.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  
+  assets:
+    - assets/images/
+    - assets/icons/

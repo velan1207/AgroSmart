@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "493013331140",
+    "project_id": "fir-42101",
+    "storage_bucket": "fir-42101.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:493013331140:android:cropmonitor",
+        "android_client_info": {
+          "package_name": "com.cropmonitor.crop_monitor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDummyKeyReplaceMeWithActualKey"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
