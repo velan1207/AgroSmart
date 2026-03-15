@@ -3,7 +3,12 @@
     "users": {
       "$userId": {
         ".read": true,
-        ".write": true
+        ".write": true,
+        "field": {
+          "history": {
+            ".indexOn": ["timestamp"]
+          }
+        }
       }
     },
     "notifications": {
