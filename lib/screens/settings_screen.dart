@@ -99,37 +99,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ).animate().fadeIn(delay: 225.ms, duration: 300.ms),
               const SizedBox(height: 24),
               
-              // Units & Preferences
-              _buildSectionTitle(context, settingsProvider.tr('units_preferences')),
-              const SizedBox(height: 12),
-              _buildSettingCard(
-                context: context,
-                icon: Icons.thermostat,
-                title: settingsProvider.tr('temperature_unit'),
-                subtitle: settingsProvider.temperatureUnit == 'celsius' ? 'Celsius (°C)' : 'Fahrenheit (°F)',
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _showTemperatureUnitPicker(context, settingsProvider),
-              ).animate().fadeIn(delay: 250.ms, duration: 300.ms),
-              const SizedBox(height: 12),
-              _buildSettingCard(
-                context: context,
-                icon: Icons.refresh,
-                title: settingsProvider.tr('refresh_interval'),
-                subtitle: '${settingsProvider.refreshInterval} seconds',
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _showRefreshIntervalPicker(context, settingsProvider),
-              ).animate().fadeIn(delay: 300.ms, duration: 300.ms),
-              const SizedBox(height: 12),
-              _buildSettingCard(
-                context: context,
-                icon: Icons.language,
-                title: settingsProvider.tr('language'),
-                subtitle: _getLanguageLabel(settingsProvider.language),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _showLanguagePicker(context, settingsProvider),
-              ).animate().fadeIn(delay: 350.ms, duration: 300.ms),
-              const SizedBox(height: 24),
-              
               // About
               _buildSectionTitle(context, settingsProvider.tr('about')),
               const SizedBox(height: 12),
@@ -1118,6 +1087,131 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: const Text('Logout'),
           ),
         ],
+      ),
+    );
+  }
+
+  void _showPhoneNumberEditor(BuildContext context, SettingsProvider provider) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final controller = TextEditingController();
+    final numbers = List<String>.from(provider.smsPhoneNumbers);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => Container(
+          padding: EdgeInsets.only(
+            left: 24,
+            right: 24,
+            top: 24,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+          ),
+          decoration: BoxDecoration(
+            color: isDark ? AppTheme.surfaceDark : AppTheme.surfaceLight,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Emergency Phone Numbers',
+                style: TextStyle(
+                  color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'SMS alerts will be sent to these numbers for critical events.',
+                style: TextStyle(
+                  color: isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Current numbers
+              if (numbers.isNotEmpty) ...[
+                ...numbers.map((num) => Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.phone, size: 18, color: AppTheme.primaryGreen),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(num, style: TextStyle(
+                        color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
+                        fontSize: 15,
+                      ))),
+                      IconButton(
+                        icon: Icon(Icons.delete_outline, size: 20, color: AppTheme.error),
+                        onPressed: () {
+                          setModalState(() => numbers.remove(num));
+                          provider.setSmsPhoneNumbers(numbers);
+                        },
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                    ],
+                  ),
+                )),
+                const SizedBox(height: 8),
+              ],
+
+              // Add new number
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: controller,
+                      keyboardType: TextInputType.phone,
+                      decoration: InputDecoration(
+                        hintText: '+91 XXXXX XXXXX',
+                        hintStyle: TextStyle(color: isDark ? Colors.white30 : Colors.black26),
+                        filled: true,
+                        fillColor: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.08),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                      style: TextStyle(
+                        color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  ElevatedButton(
+                    onPressed: () {
+                      final text = controller.text.trim();
+                      if (text.isNotEmpty && !numbers.contains(text)) {
+                        setModalState(() => numbers.add(text));
+                        provider.setSmsPhoneNumbers(numbers);
+                        controller.clear();
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.primaryGreen,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Icon(Icons.add, color: Colors.white),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
       ),
     );
   }

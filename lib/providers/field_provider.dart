@@ -5,6 +5,10 @@ import '../services/services.dart';
 
 class FieldProvider extends ChangeNotifier {
   final FirebaseService _firebaseService = FirebaseService();
+  final StorageService _storageService = StorageService();
+  
+  // Track last storage time to avoid storing every reading
+  DateTime? _lastStoredTime;
   
   List<Field> _fields = [];
   Field? _selectedField;
@@ -96,6 +100,10 @@ class FieldProvider extends ChangeNotifier {
         _currentSensorData = data;
         _selectedField?.latestData = data;
         _selectedField?.isPumpOn = data.pumpStatus;
+        
+        // Store reading locally every 1 minute for history graphs
+        _storeReadingLocally(data);
+        
         notifyListeners();
       });
 
@@ -216,7 +224,11 @@ class FieldProvider extends ChangeNotifier {
   // Update field settings
   Future<bool> updateFieldSettings(String cropId, FieldSettings settings) async {
     try {
-      await _firebaseService.updateFieldSettings(cropId, settings);
+      final success = await _firebaseService.updateFieldSettings(cropId, settings);
+      if (!success) {
+        _error = 'Failed to update settings in cloud';
+        return false;
+      }
       
       final index = _fields.indexWhere((f) => f.id == cropId);
       if (index != -1) {
@@ -290,28 +302,79 @@ class FieldProvider extends ChangeNotifier {
     }
   }
 
-  // Get historical data for charts
+  // Store sensor reading locally for history graphs
+  void _storeReadingLocally(SensorData data) {
+    final now = DateTime.now();
+    
+    // Only store every 1 minute to avoid excessive storage
+    if (_lastStoredTime != null && 
+        now.difference(_lastStoredTime!).inSeconds < 60) {
+      return;
+    }
+    
+    _lastStoredTime = now;
+    
+    _storageService.storeSensorReading({
+      'temperature': data.temperature,
+      'humidity': data.humidity,
+      'soilMoisture': data.soilMoisture,
+      'timestamp': data.timestamp.millisecondsSinceEpoch,
+    });
+    
+    debugPrint('[FieldProvider] Stored sensor reading locally');
+  }
+
+  // Get historical data for charts (with local fallback)
   Future<List<SensorData>> getHistoricalData({
     required DateTime startDate,
     required DateTime endDate,
   }) async {
     if (_selectedField == null) return [];
     
-    return await _firebaseService.getHistoricalData(
+    // Try Firebase first
+    List<SensorData> firebaseData = await _firebaseService.getHistoricalData(
       _selectedField!.id,
       startDate: startDate,
       endDate: endDate,
     );
+    
+    // If Firebase has data, return it
+    if (firebaseData.isNotEmpty) {
+      debugPrint('[FieldProvider] Using ${firebaseData.length} records from Firebase');
+      return firebaseData;
+    }
+    
+    // Fallback to local storage
+    debugPrint('[FieldProvider] Firebase history empty, using local storage');
+    final localHistory = _storageService.getSensorHistoryInRange(startDate, endDate);
+    
+    return localHistory.map((reading) => SensorData(
+      temperature: (reading['temperature'] as num?)?.toDouble() ?? 0,
+      humidity: (reading['humidity'] as num?)?.toDouble() ?? 0,
+      soilMoisture: (reading['soilMoisture'] as num?)?.toDouble() ?? 0,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(reading['timestamp'] as int? ?? 0),
+    )).toList();
   }
 
-  // Get daily averages for charts
+  // Get daily averages for charts (with local fallback)
   Future<List<Map<String, dynamic>>> getDailyAverages({int days = 7}) async {
     if (_selectedField == null) return [];
     
-    return await _firebaseService.getDailyAverages(
+    // Try Firebase first
+    List<Map<String, dynamic>> firebaseAverages = await _firebaseService.getDailyAverages(
       _selectedField!.id,
       days: days,
     );
+    
+    // If Firebase has data, return it
+    if (firebaseAverages.isNotEmpty) {
+      debugPrint('[FieldProvider] Using ${firebaseAverages.length} daily averages from Firebase');
+      return firebaseAverages;
+    }
+    
+    // Fallback to local calculation
+    debugPrint('[FieldProvider] Firebase averages empty, calculating from local storage');
+    return _storageService.calculateDailyAverages(days: days);
   }
 
   // Dispose resources

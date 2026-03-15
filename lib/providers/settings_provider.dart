@@ -16,6 +16,11 @@ class SettingsProvider extends ChangeNotifier {
   bool _isOnline = true;
   bool _isInitialized = false;
 
+  // SMS & Voice alerts
+  bool _smsAlertsEnabled = false;
+  List<String> _smsPhoneNumbers = [];
+  bool _voiceAlertsEnabled = false;
+
   // Getters
   bool get isInitialized => _isInitialized;
   bool get isDarkMode => _isDarkMode;
@@ -29,6 +34,9 @@ class SettingsProvider extends ChangeNotifier {
   bool get hasUserId => _userId != null && _userId!.isNotEmpty;
   ThemeMode get themeMode => _isDarkMode ? ThemeMode.dark : ThemeMode.light;
   bool get isOnline => _isOnline;
+  bool get smsAlertsEnabled => _smsAlertsEnabled;
+  List<String> get smsPhoneNumbers => List.unmodifiable(_smsPhoneNumbers);
+  bool get voiceAlertsEnabled => _voiceAlertsEnabled;
 
   // Initialize settings from storage
   Future<void> initialize() async {
@@ -43,6 +51,9 @@ class SettingsProvider extends ChangeNotifier {
     _languageCode = _languageNameToCode(_storageService.getLanguage());
     _refreshInterval = _storageService.getRefreshInterval();
     _userId = _storageService.getUserId();
+    _smsAlertsEnabled = _storageService.getSmsAlertsEnabled();
+    _smsPhoneNumbers = _storageService.getSmsPhoneNumbers();
+    _voiceAlertsEnabled = _storageService.getVoiceAlertsEnabled();
     
     if (_userId != null) {
       FirebaseService().setUserId(_userId!);
@@ -149,6 +160,40 @@ class SettingsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // SMS Alert settings
+  Future<void> setSmsAlertsEnabled(bool value) async {
+    _smsAlertsEnabled = value;
+    await _storageService.setSmsAlertsEnabled(value);
+    notifyListeners();
+  }
+
+  Future<void> setSmsPhoneNumbers(List<String> numbers) async {
+    _smsPhoneNumbers = numbers;
+    await _storageService.setSmsPhoneNumbers(numbers);
+    notifyListeners();
+  }
+
+  Future<void> addSmsPhoneNumber(String number) async {
+    if (!_smsPhoneNumbers.contains(number)) {
+      _smsPhoneNumbers.add(number);
+      await _storageService.setSmsPhoneNumbers(_smsPhoneNumbers);
+      notifyListeners();
+    }
+  }
+
+  Future<void> removeSmsPhoneNumber(String number) async {
+    _smsPhoneNumbers.remove(number);
+    await _storageService.setSmsPhoneNumbers(_smsPhoneNumbers);
+    notifyListeners();
+  }
+
+  // Voice Alert settings
+  Future<void> setVoiceAlertsEnabled(bool value) async {
+    _voiceAlertsEnabled = value;
+    await _storageService.setVoiceAlertsEnabled(value);
+    notifyListeners();
+  }
+
   // Convert temperature based on unit preference
   double convertTemperature(double celsius) {
     if (_temperatureUnit == 'fahrenheit') {
@@ -179,6 +224,9 @@ class SettingsProvider extends ChangeNotifier {
     _languageCode = 'en';
     _refreshInterval = 5;
     _userId = null;
+    _smsAlertsEnabled = false;
+    _smsPhoneNumbers = [];
+    _voiceAlertsEnabled = false;
     
     // Clear in Firebase Service too
     FirebaseService().setUserId('');

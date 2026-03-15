@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_logo.dart';
 import 'home_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -47,27 +48,9 @@ class _SplashScreenState extends State<SplashScreen> {
                 const Spacer(flex: 2),
                 
                 // Logo
-                Container(
-                  width: 120,
-                  height: 120,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(30),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 30,
-                        offset: const Offset(0, 10),
-                      ),
-                    ],
-                  ),
-                  child: const Center(
-                    child: Icon(
-                      Icons.eco,
-                      size: 64,
-                      color: Colors.white,
-                    ),
-                  ),
+                const AppLogo(
+                  size: 120,
+                  borderRadius: 30,
                 ).animate().scale(
                       duration: 600.ms,
                       curve: Curves.easeOutBack,

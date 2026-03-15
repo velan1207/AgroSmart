@@ -22,12 +22,14 @@ class _ThresholdSettingsScreenState extends State<ThresholdSettingsScreen> {
   late TextEditingController _maxHumidityController;
   
   bool _isSaving = false;
+  late bool _autoIrrigation;
 
   @override
   void initState() {
     super.initState();
     final field = context.read<FieldProvider>().selectedField;
     final settings = field?.settings ?? FieldSettings();
+    _autoIrrigation = settings.autoIrrigation;
     
     _minMoistureController = TextEditingController(text: settings.minMoisture.toString());
     _maxMoistureController = TextEditingController(text: settings.maxMoisture.toString());
@@ -100,7 +102,7 @@ class _ThresholdSettingsScreenState extends State<ThresholdSettingsScreen> {
       minHumidity: double.parse(_minHumidityController.text),
       maxHumidity: double.parse(_maxHumidityController.text),
       samplingIntervalMinutes: field.settings.samplingIntervalMinutes,
-      autoIrrigation: field.settings.autoIrrigation,
+      autoIrrigation: _autoIrrigation,
     );
 
     final success = await fieldProvider.updateFieldSettings(field.id, newSettings);
@@ -154,6 +156,10 @@ class _ThresholdSettingsScreenState extends State<ThresholdSettingsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // ── Auto Irrigation Toggle ──
+              _buildAutoIrrigationToggle(context, isDark, lang),
+              const SizedBox(height: 28),
+
               Text(
                 lang == 'ta' ? 'பாதுகாப்பு அளவீடுகள்' : 'Safety Thresholds',
                 style: TextStyle(
@@ -255,6 +261,148 @@ class _ThresholdSettingsScreenState extends State<ThresholdSettingsScreen> {
             title,
             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAutoIrrigationToggle(BuildContext context, bool isDark, String lang) {
+    final activeColor = _autoIrrigation ? AppTheme.primaryGreen : (isDark ? Colors.grey.shade700 : Colors.grey.shade300);
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeInOut,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: _autoIrrigation
+            ? LinearGradient(
+                colors: [AppTheme.primaryGreen.withOpacity(0.15), AppTheme.primaryGreen.withOpacity(0.05)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              )
+            : null,
+        color: _autoIrrigation ? null : (isDark ? AppTheme.cardDark : AppTheme.cardLight),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: _autoIrrigation ? AppTheme.primaryGreen.withOpacity(0.4) : (isDark ? Colors.white12 : Colors.grey.shade200),
+          width: _autoIrrigation ? 2 : 1,
+        ),
+        boxShadow: _autoIrrigation
+            ? [
+                BoxShadow(
+                  color: AppTheme.primaryGreen.withOpacity(0.15),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ]
+            : null,
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              // Icon
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: activeColor.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(
+                  _autoIrrigation ? Icons.water_drop : Icons.water_drop_outlined,
+                  color: _autoIrrigation ? AppTheme.primaryGreen : Colors.grey,
+                  size: 28,
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Title + subtitle
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      lang == 'ta'
+                          ? 'தானியங்கி நீர்ப்பாசனம்'
+                          : lang == 'hi'
+                              ? 'ऑटो सिंचाई'
+                              : 'Auto Irrigation',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _autoIrrigation
+                          ? (lang == 'ta'
+                              ? 'மண் வறண்டால் தானாக பம்ப் இயங்கும்'
+                              : lang == 'hi'
+                                  ? 'मिट्टी सूखने पर पंप अपने आप चलेगा'
+                                  : 'Pump will activate automatically when soil is dry')
+                          : (lang == 'ta'
+                              ? 'பம்ப் கைமுறையாக கட்டுப்படுத்தப்படும்'
+                              : lang == 'hi'
+                                  ? 'पंप मैन्युअल रूप से नियंत्रित होगा'
+                                  : 'Pump is controlled manually from dashboard'),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _autoIrrigation
+                            ? AppTheme.primaryGreen.withOpacity(0.8)
+                            : (isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Toggle Switch
+              Transform.scale(
+                scale: 1.1,
+                child: Switch.adaptive(
+                  value: _autoIrrigation,
+                  activeColor: AppTheme.primaryGreen,
+                  activeTrackColor: AppTheme.primaryGreen.withOpacity(0.4),
+                  inactiveThumbColor: Colors.grey.shade400,
+                  inactiveTrackColor: isDark ? Colors.grey.shade800 : Colors.grey.shade300,
+                  onChanged: (val) {
+                    setState(() => _autoIrrigation = val);
+                  },
+                ),
+              ),
+            ],
+          ),
+          // Info row when enabled
+          if (_autoIrrigation) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppTheme.primaryGreen.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 16, color: AppTheme.primaryGreen.withOpacity(0.7)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      lang == 'ta'
+                          ? 'மண் ஈரப்பதம் குறைந்தபட்சத்தை விட குறைந்தால் பம்ப் இயங்கும், அதிகபட்சத்தை அடைந்ததும் நிற்கும்.'
+                          : lang == 'hi'
+                              ? 'जब नमी न्यूनतम से कम हो तो पंप चालू होगा, अधिकतम पहुँचने पर बंद होगा।'
+                              : 'Pump turns ON when moisture drops below Min threshold, and OFF when it reaches Max threshold.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

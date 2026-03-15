@@ -2,33 +2,9 @@
   "rules": {
     "users": {
       "$userId": {
-        "profile": {
-          ".read": "auth != null && auth.uid == $userId",
-          ".write": "auth != null && auth.uid == $userId"
-        },
-        "crops": {
-          "$cropId": {
-            ".read": "auth != null && auth.uid == $userId",
-            ".write": "auth != null && auth.uid == $userId",
-            "live": {
-              ".read": true,
-              ".write": true
-            },
-            "alerts": {
-              ".read": "auth != null && auth.uid == $userId",
-              ".write": true
-            },
-            "history": {
-              ".read": "auth != null && auth.uid == $userId",
-              ".write": true
-            }
-          }
-        }
+        ".read": true,
+        ".write": true
       }
-    },
-    "deviceStatus": {
-      ".read": true,
-      ".write": true
     },
     "notifications": {
       "$userId": {

@@ -8,3 +8,5 @@ export 'weather_widget.dart';
 export 'ai_insights_card.dart';
 export 'language_selector.dart';
 export 'connection_status_widget.dart';
+export 'stress_prediction_card.dart';
+export 'app_logo.dart';

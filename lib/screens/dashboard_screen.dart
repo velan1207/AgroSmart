@@ -8,6 +8,8 @@ import '../widgets/widgets.dart';
 import '../models/models.dart';
 import '../utils/localization.dart';
 import '../services/services.dart';
+import 'alerts_screen.dart';
+import 'stress_prediction_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -18,6 +20,11 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   bool _isPumpLoading = false;
+  bool _isAutoToggling = false;
+  StressPrediction? _stressPrediction;
+  bool _isStressPredictionLoading = false;
+  String? _lastStressLanguage;
+  bool _isStressVoicePlaying = false;
 
   @override
   Widget build(BuildContext context) {
@@ -28,6 +35,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final field = fieldProvider.selectedField;
         final sensorData = fieldProvider.currentSensorData;
         final lang = settings.languageCode;
+        final ttsSpeaking = TTSService().isSpeaking;
+
+        if (_isStressVoicePlaying && !ttsSpeaking) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _isStressVoicePlaying) {
+              setState(() => _isStressVoicePlaying = false);
+            }
+          });
+        }
+
+        if (_lastStressLanguage != null &&
+            _lastStressLanguage != lang &&
+            sensorData != null &&
+            field != null &&
+            !_isStressPredictionLoading) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _loadStressPrediction(sensorData, field, lang);
+            }
+          });
+        }
         
         debugPrint('[DashboardScreen] Build: field=${field?.id}, sensorData=${sensorData != null} (T:${sensorData?.temperature}, H:${sensorData?.humidity}, S:${sensorData?.soilMoisture})');
 
@@ -53,13 +81,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
           return _buildEmptyState(context, lang);
         }
 
-      return _buildMainLayout(context, sensorData, field, lang, settings.isOnline, fieldProvider.isHardwareOnline);
+      return _buildMainLayout(
+        context,
+        sensorData,
+        field,
+        lang,
+        settings.isOnline,
+        fieldProvider.isHardwareOnline,
+        ttsSpeaking,
+      );
     },
   );
 }
 
-Widget _buildMainLayout(BuildContext context, SensorData? sensorData, Field field, String lang, bool isAppOnline, bool isHardwareOnline) {
+Widget _buildMainLayout(
+  BuildContext context,
+  SensorData? sensorData,
+  Field field,
+  String lang,
+  bool isAppOnline,
+  bool isHardwareOnline,
+  bool ttsSpeaking,
+) {
   final isDark = Theme.of(context).brightness == Brightness.dark;
+  final screenWidth = MediaQuery.of(context).size.width;
   
   return Stack(
     children: [
@@ -81,7 +126,10 @@ Widget _buildMainLayout(BuildContext context, SensorData? sensorData, Field fiel
         color: AppTheme.primaryGreen,
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+          padding: EdgeInsets.symmetric(
+            horizontal: screenWidth > 900 ? (screenWidth - 860) / 2 : 20.0,
+            vertical: 24,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -100,6 +148,36 @@ Widget _buildMainLayout(BuildContext context, SensorData? sensorData, Field fiel
               
               // Motor Control - Large Touch Target
               _buildMotorControl(context, field, context.read<FieldProvider>(), lang),
+              const SizedBox(height: 16),
+
+              // Auto Irrigation Toggle
+              _buildAutoIrrigationCard(context, field, context.read<FieldProvider>(), lang),
+              const SizedBox(height: 24),
+
+              // AI Stress Prediction Card
+              StressPredictionCard(
+                prediction: _stressPrediction,
+                isLoading: _isStressPredictionLoading,
+                isVoicePlaying: _isStressVoicePlaying || ttsSpeaking,
+                languageCode: lang,
+                onTap: () {
+                  if (_stressPrediction != null) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => StressPredictionScreen(
+                          prediction: _stressPrediction!,
+                          languageCode: lang,
+                        ),
+                      ),
+                    );
+                  } else {
+                    _loadStressPrediction(sensorData, field, lang);
+                  }
+                },
+                onRefresh: () => _loadStressPrediction(sensorData, field, lang),
+                onVoiceToggle: () => _toggleStressVoice(sensorData, field, lang),
+              ).animate().fadeIn(delay: 200.ms, duration: DesignTokens.animNormal),
               const SizedBox(height: 24),
               
               // Recent Alerts Preview (Add this for more "completeness")
@@ -124,27 +202,32 @@ Widget _buildHeader(BuildContext context, String lang, bool isAppOnline, bool is
   return Row(
     mainAxisAlignment: MainAxisAlignment.spaceBetween,
     children: [
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            greeting,
-            style: TextStyle(
-              fontSize: 14,
-              color: isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight,
-              letterSpacing: 0.5,
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              greeting,
+              style: TextStyle(
+                fontSize: 14,
+                color: isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight,
+                letterSpacing: 0.5,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '${userProvider.displayName} 👋',
-            style: const TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
+            const SizedBox(height: 4),
+            Text(
+              '${userProvider.displayName} 👋',
+              style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
-          ),
-        ],
+          ],
+        ),
       ),
+      const SizedBox(width: 16),
       Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
@@ -250,7 +333,16 @@ Widget _buildAlertsPreview(BuildContext context, String lang) {
     ),
     child: Row(
       children: [
-        const Icon(Icons.notifications_none, color: AppTheme.primaryGreen),
+        IconButton(
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AlertsScreen()),
+            );
+          },
+          icon: const Icon(Icons.notifications_none, color: AppTheme.primaryGreen),
+          tooltip: AppLocalizations.get('alerts', lang),
+        ),
         const SizedBox(width: 12),
         const Expanded(
           child: Text(
@@ -259,12 +351,78 @@ Widget _buildAlertsPreview(BuildContext context, String lang) {
           ),
         ),
         TextButton(
-          onPressed: () {}, // Navigate to alerts
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AlertsScreen()),
+            );
+          },
           child: const Text('VIEW', style: TextStyle(fontWeight: FontWeight.bold)),
         ),
       ],
     ),
   );
+  }
+
+  Future<void> _loadStressPrediction(SensorData? sensorData, Field field, String lang) async {
+    if (sensorData == null || _isStressPredictionLoading) return;
+    setState(() => _isStressPredictionLoading = true);
+    try {
+      final prediction = await AIService().predictStress(
+        sensorData: sensorData,
+        field: field,
+        languageCode: lang,
+      );
+      if (mounted) {
+        setState(() {
+          _stressPrediction = prediction;
+          _isStressPredictionLoading = false;
+          _lastStressLanguage = lang;
+        });
+      }
+    } catch (e) {
+      debugPrint('[Dashboard] Stress prediction error: $e');
+      if (mounted) setState(() => _isStressPredictionLoading = false);
+    }
+  }
+
+  Future<void> _toggleStressVoice(SensorData? sensorData, Field field, String lang) async {
+    final tts = TTSService();
+
+    if (_isStressVoicePlaying || tts.isSpeaking) {
+      await tts.stop();
+      if (mounted) setState(() => _isStressVoicePlaying = false);
+      return;
+    }
+
+    if (_stressPrediction == null && sensorData != null) {
+      await _loadStressPrediction(sensorData, field, lang);
+    }
+
+    final pred = _stressPrediction;
+    if (pred == null) return;
+
+    final summary = '${pred.predictedStressType}. ${pred.recommendation}. ${pred.detailedAnalysis}';
+    await tts.speakStressPrediction(summary, lang);
+
+    if (!tts.isAvailable) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              lang == 'ta'
+                  ? 'இந்த சாதனத்தில் குரல் வெளியீடு ஆதரிக்கப்படவில்லை.'
+                  : (lang == 'hi'
+                      ? 'इस डिवाइस पर वॉइस आउटपुट समर्थित नहीं है।'
+                      : 'Voice output is not supported on this device.'),
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (mounted) setState(() => _isStressVoicePlaying = true);
   }
 
   Widget _buildEmptyState(BuildContext context, String lang) {
@@ -539,7 +697,46 @@ Widget _buildAlertsPreview(BuildContext context, String lang) {
   Widget _buildSensorGrid(BuildContext context, SensorData? data, String lang) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Switch to column for extremely narrow screens or keep row with fitted boxes
+        // Single column for very narrow screens (< 340px)
+        if (constraints.maxWidth < 340) {
+          return Column(
+            children: [
+              _buildSensorCard(
+                context,
+                icon: Icons.thermostat,
+                label: AppLocalizations.get('temperature', lang),
+                value: data?.temperature != null ? data!.temperature.toStringAsFixed(1) : '--',
+                unit: '°C',
+                status: data?.temperatureStatus ?? 'Waiting...',
+                gradient: AppTheme.temperatureGradient,
+                isLoading: data == null,
+              ),
+              const SizedBox(height: 8),
+              _buildSensorCard(
+                context,
+                icon: Icons.water_drop,
+                label: AppLocalizations.get('humidity', lang),
+                value: data?.humidity != null ? data!.humidity.toStringAsFixed(0) : '--',
+                unit: '%',
+                status: data?.humidityStatus ?? 'Waiting...',
+                gradient: AppTheme.humidityGradient,
+                isLoading: data == null,
+              ),
+              const SizedBox(height: 8),
+              _buildSensorCard(
+                context,
+                icon: Icons.grass,
+                label: AppLocalizations.get('soil_moisture', lang),
+                value: data?.soilMoisture != null ? data!.soilMoisture.toStringAsFixed(0) : '--',
+                unit: '%',
+                status: data?.soilMoistureStatus ?? 'Waiting...',
+                gradient: AppTheme.soilMoistureGradient,
+                isLoading: data == null,
+                nonOptimalSymbol: '✓',
+              ),
+            ],
+          );
+        }
         return IntrinsicHeight(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -580,6 +777,7 @@ Widget _buildAlertsPreview(BuildContext context, String lang) {
                   status: data?.soilMoistureStatus ?? 'Waiting...',
                   gradient: AppTheme.soilMoistureGradient,
                   isLoading: data == null,
+                  nonOptimalSymbol: '✓',
                 ),
               ),
             ],
@@ -598,6 +796,7 @@ Widget _buildAlertsPreview(BuildContext context, String lang) {
     required String status,
     required LinearGradient gradient,
     bool isLoading = false,
+    String nonOptimalSymbol = '!',
   }) {
     final isOptimal = status.toLowerCase().contains('optimal');
     
@@ -675,7 +874,7 @@ Widget _buildAlertsPreview(BuildContext context, String lang) {
               borderRadius: BorderRadius.circular(DesignTokens.radiusFull),
             ),
             child: Text(
-              isOptimal ? '✓' : '!',
+              isOptimal ? '✓' : nonOptimalSymbol,
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: DesignTokens.fontSmall,
@@ -750,8 +949,21 @@ Widget _buildAlertsPreview(BuildContext context, String lang) {
             child: ElevatedButton(
               onPressed: _isPumpLoading ? null : () async {
                 setState(() => _isPumpLoading = true);
-                await provider.togglePump();
+                final ok = await provider.togglePump();
                 setState(() => _isPumpLoading = false);
+                if (!ok && context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        lang == 'ta'
+                            ? 'மோட்டார் கட்டளையை அனுப்ப முடியவில்லை.'
+                            : (lang == 'hi'
+                                ? 'मोटर कमांड भेजने में विफल।'
+                                : 'Failed to send motor command.'),
+                      ),
+                    ),
+                  );
+                }
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: isOn ? AppTheme.critical : AppTheme.primaryGreen,
@@ -782,5 +994,133 @@ Widget _buildAlertsPreview(BuildContext context, String lang) {
         ],
       ),
     ).animate().fadeIn(delay: 150.ms, duration: DesignTokens.animNormal);
+  }
+
+  Widget _buildAutoIrrigationCard(BuildContext context, Field field, FieldProvider provider, String lang) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isAuto = field.settings.autoIrrigation;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeInOut,
+      padding: const EdgeInsets.all(DesignTokens.space16),
+      decoration: BoxDecoration(
+        gradient: isAuto
+            ? LinearGradient(
+                colors: [
+                  AppTheme.primaryGreen.withOpacity(0.12),
+                  AppTheme.primaryGreen.withOpacity(0.04),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              )
+            : null,
+        color: isAuto ? null : (isDark ? AppTheme.cardDark : AppTheme.cardLight),
+        borderRadius: BorderRadius.circular(DesignTokens.radiusLarge),
+        boxShadow: isDark ? null : AppTheme.cardShadow,
+        border: Border.all(
+          color: isAuto
+              ? AppTheme.primaryGreen.withOpacity(0.4)
+              : Colors.transparent,
+          width: isAuto ? 1.5 : 0,
+        ),
+      ),
+      child: Row(
+        children: [
+          // Icon
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: (isAuto ? AppTheme.primaryGreen : AppTheme.textSecondaryLight)
+                  .withOpacity(0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              isAuto ? Icons.autorenew : Icons.back_hand_outlined,
+              color: isAuto ? AppTheme.primaryGreen : AppTheme.textSecondaryLight,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: DesignTokens.space12),
+          // Text
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  lang == 'ta'
+                      ? '\u0ba4\u0bbe\u0ba9\u0bbf\u0baf\u0b99\u0bcd\u0b95\u0bbf \u0ba8\u0bc0\u0bb0\u0bcd\u0baa\u0bcd\u0baa\u0bbe\u0b9a\u0ba9\u0bae\u0bcd'
+                      : lang == 'hi'
+                          ? '\u0911\u091f\u094b \u0938\u093f\u0902\u091a\u093e\u0908'
+                          : 'Auto Irrigation',
+                  style: TextStyle(
+                    color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
+                    fontSize: DesignTokens.fontMedium,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  isAuto
+                      ? (lang == 'ta'
+                          ? '\u0bae\u0ba3\u0bcd \u0bb5\u0bb1\u0ba3\u0bcd\u0b9f\u0bbe\u0bb2\u0bcd \u0ba4\u0bbe\u0ba9\u0bbe\u0b95 \u0baa\u0bae\u0bcd\u0baa\u0bcd \u0b87\u0baf\u0b99\u0bcd\u0b95\u0bc1\u0bae\u0bcd'
+                          : lang == 'hi'
+                              ? '\u092e\u093f\u091f\u094d\u091f\u0940 \u0938\u0942\u0916\u0928\u0947 \u092a\u0930 \u092a\u0902\u092a \u0905\u092a\u0928\u0947 \u0906\u092a \u091a\u0932\u0947\u0917\u093e'
+                              : 'Pump activates when soil is dry')
+                      : (lang == 'ta'
+                          ? '\u0b95\u0bc8\u0bae\u0bc1\u0bb1\u0bc8 \u0b95\u0b9f\u0bcd\u0b9f\u0bc1\u0baa\u0bcd\u0baa\u0bbe\u0b9f\u0bc1'
+                          : lang == 'hi'
+                              ? '\u092e\u0948\u0928\u094d\u092f\u0941\u0905\u0932 \u0928\u093f\u092f\u0902\u0924\u094d\u0930\u0923'
+                              : 'Manual control only'),
+                  style: TextStyle(
+                    color: isAuto
+                        ? AppTheme.primaryGreen.withOpacity(0.8)
+                        : (isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight),
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Toggle
+          _isAutoToggling
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppTheme.primaryGreen,
+                  ),
+                )
+              : Switch.adaptive(
+                  value: isAuto,
+                  activeColor: AppTheme.primaryGreen,
+                  activeTrackColor: AppTheme.primaryGreen.withOpacity(0.4),
+                  inactiveThumbColor: Colors.grey.shade400,
+                  inactiveTrackColor: isDark ? Colors.grey.shade800 : Colors.grey.shade300,
+                  onChanged: (val) async {
+                    setState(() => _isAutoToggling = true);
+                    final newSettings = field.settings.copyWith(autoIrrigation: val);
+                    final ok = await provider.updateFieldSettings(field.id, newSettings);
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            lang == 'ta'
+                                ? 'தானியங்கி நீர்ப்பாசன அமைப்பை புதுப்பிக்க முடியவில்லை.'
+                                : (lang == 'hi'
+                                    ? 'ऑटो सिंचाई सेटिंग अपडेट नहीं हुई।'
+                                    : 'Failed to update auto-irrigation setting.'),
+                          ),
+                        ),
+                      );
+                    }
+                    if (mounted) setState(() => _isAutoToggling = false);
+                  },
+                ),
+        ],
+      ),
+    ).animate().fadeIn(delay: 175.ms, duration: DesignTokens.animNormal);
   }
 }

@@ -3,6 +3,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 import '../providers/providers.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_logo.dart';
 import '../services/services.dart';
 import '../models/models.dart';
 
@@ -36,62 +37,83 @@ class _SetupScreenState extends State<SetupScreen> {
     try {
       final userId = _userIdController.text.trim();
       final nameInput = _nameController.text.trim();
-      
-      // Handle default_user bypass
-      if (userId == 'default_user' && nameInput.toLowerCase() == 'farmer ramesh') {
-        final settings = context.read<SettingsProvider>();
-        await settings.setUserId(userId);
-        if (mounted) {
-          await Future.wait([
-            context.read<FieldProvider>().loadFields(),
-            context.read<AlertProvider>().initialize(),
-          ]);
-        }
+
+      // 1. Validate user against Firebase
+      final firebase = FirebaseService();
+
+      if (!firebase.isAvailable) {
+        setState(() {
+          _userIdError = 'Cloud login is not available on this platform. Please use web/mobile build.';
+          _isLoading = false;
+        });
         return;
       }
 
-      // 1. Check if user exists in Firebase
-      final firebase = FirebaseService();
       final existingProfile = await firebase.getUserProfile(userId);
-      
+
       if (existingProfile == null) {
         setState(() {
-          _userIdError = 'Monitoring Code not found. Please contact support.';
+          _userIdError = 'User not found. Please check your Monitoring Code.';
           _isLoading = false;
         });
         return;
       }
 
-      // 2. Verification logic: name must match (case-insensitive)
-      if (existingProfile.name.toLowerCase() != nameInput.toLowerCase()) {
-        setState(() {
-          _nameError = 'Incorrect Name for this Monitoring Code.';
-          _isLoading = false;
-        });
-        return;
+      // 2. Check if this is a first-time login (ESP32 created node, no real profile yet)
+      final isFirstTimeUser = existingProfile.name == 'User';
+
+      if (!isFirstTimeUser) {
+        // Returning user — verify name matches (case-insensitive)
+        if (existingProfile.name.toLowerCase() != nameInput.toLowerCase()) {
+          setState(() {
+            _nameError = 'Name does not match this Monitoring Code. Please check your name.';
+            _isLoading = false;
+          });
+          return;
+        }
       }
 
       // 3. Set User ID in settings
       final settings = context.read<SettingsProvider>();
       await settings.setUserId(userId);
 
-      // 4. Update UserProvider
+      // 4. If first-time user, save their name as profile
+      UserProfile profileToUse = existingProfile;
+      if (isFirstTimeUser) {
+        profileToUse = UserProfile(
+          uid: userId,
+          name: nameInput,
+          phone: _phoneController.text.trim(),
+          location: _locationController.text.trim(),
+        );
+        await firebase.updateUserProfile(profileToUse);
+        debugPrint('[Setup] First-time profile saved for $userId');
+      }
+
+      // 5. Update UserProvider
       if (mounted) {
-        context.read<UserProvider>().setProfile(existingProfile);
-        
+        context.read<UserProvider>().setProfile(profileToUse);
+
         // Reload data
         await Future.wait([
           context.read<FieldProvider>().loadFields(),
-          context.read<AlertProvider>().initialize(),
+          context.read<AlertProvider>().initialize(settingsProvider: settings),
         ]);
       }
     } catch (e) {
       if (mounted) {
+        String errorMessage = 'Setup failed. ';
+        if (e.toString().contains('network') || e.toString().contains('SocketException')) {
+          errorMessage += 'No internet connection. Please check your network.';
+        } else {
+          errorMessage += '$e';
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Setup failed: $e'), 
+            content: Text(errorMessage),
             backgroundColor: AppTheme.critical,
             behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
           ),
         );
       }
@@ -103,12 +125,16 @@ class _SetupScreenState extends State<SetupScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final screenWidth = MediaQuery.of(context).size.width;
 
     return Scaffold(
       backgroundColor: isDark ? AppTheme.backgroundDark : AppTheme.backgroundLight,
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+          padding: EdgeInsets.symmetric(
+            horizontal: screenWidth > 568 ? (screenWidth - 520) / 2 : 24.0,
+            vertical: 24,
+          ),
           child: Form(
             key: _formKey,
             child: Column(
@@ -117,13 +143,9 @@ class _SetupScreenState extends State<SetupScreen> {
                 const SizedBox(height: 40),
                 // Logo/Icon
                 Center(
-                  child: Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      gradient: AppTheme.primaryGradient,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.eco, color: Colors.white, size: 64),
+                  child: const AppLogo(
+                    size: 120,
+                    borderRadius: 60,
                   ).animate().scale(duration: 600.ms, curve: Curves.easeOutBack),
                 ),
                 const SizedBox(height: 24),

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../providers/providers.dart';
 import '../theme/app_theme.dart';
 import '../theme/design_tokens.dart';
+import '../widgets/app_logo.dart';
 import '../widgets/language_selector.dart';
 import '../models/models.dart';
 import 'alerts_screen.dart';
@@ -12,6 +13,7 @@ import 'setup_screen.dart';
 import 'ai_insights_screen.dart';
 import 'dashboard_screen.dart';
 import 'graph_screen.dart';
+import 'loading_screen.dart';
 import '../utils/localization.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -23,6 +25,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
+  bool _isBootstrapping = false;
+  String? _bootstrappedUserId;
   
   final List<Widget> _screens = const [
     DashboardScreen(),
@@ -38,33 +42,67 @@ class _HomeScreenState extends State<HomeScreen> {
     _initializeApp();
   }
 
-  Future<void> _initializeApp() async {
+  Future<void> _initializeApp({bool force = false}) async {
+    if (_isBootstrapping && !force) return;
+
+    if (mounted) {
+      setState(() {
+        _isBootstrapping = true;
+      });
+    }
+
     final settingsProvider = context.read<SettingsProvider>();
     final userProvider = context.read<UserProvider>();
     final fieldProvider = context.read<FieldProvider>();
     final alertProvider = context.read<AlertProvider>();
-    
-    await settingsProvider.initialize();
-    
-    if (settingsProvider.hasUserId) {
-      await userProvider.loadProfile(settingsProvider.userId!);
+
+    try {
+      await settingsProvider.initialize();
+
+      if (!settingsProvider.hasUserId) {
+        _bootstrappedUserId = null;
+        return;
+      }
+
+      final activeUserId = settingsProvider.userId!;
+      await userProvider.loadProfile(activeUserId);
+
+      await Future.wait([
+        fieldProvider.loadFields(),
+        alertProvider.initialize(settingsProvider: settingsProvider),
+      ]);
+
+      _bootstrappedUserId = activeUserId;
+    } catch (e) {
+      debugPrint('[HomeScreen] Initialization error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isBootstrapping = false;
+        });
+      }
     }
-    
-    await fieldProvider.loadFields();
-    await alertProvider.initialize();
   }
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    if (settings.isInitialized) {
+      final needsRebootstrap = settings.hasUserId && settings.userId != _bootstrappedUserId;
+      if (needsRebootstrap && !_isBootstrapping) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _initializeApp(force: true);
+          }
+        });
+      }
+    }
     
-    // Show loading while initializing
-    if (!settings.isInitialized) {
-      return Scaffold(
-        backgroundColor: isDark ? AppTheme.backgroundDark : AppTheme.backgroundLight,
-        body: const Center(child: CircularProgressIndicator(color: AppTheme.primaryGreen)),
-      );
+    // Show full-screen loading while app/auth bootstrap is in progress.
+    if (!settings.isInitialized || _isBootstrapping) {
+      return const LoadingScreen();
     }
     
     // If initialized and still no user id, show setup
@@ -72,14 +110,34 @@ class _HomeScreenState extends State<HomeScreen> {
       return const SetupScreen();
     }
 
+    final screenWidth = MediaQuery.of(context).size.width;
+    final useRail = screenWidth >= 720;
+
     return Scaffold(
       backgroundColor: isDark ? AppTheme.backgroundDark : AppTheme.backgroundLight,
       appBar: _buildAppBar(context),
-      body: AnimatedSwitcher(
-        duration: DesignTokens.animNormal,
-        child: _screens[_currentIndex],
-      ),
-      bottomNavigationBar: _buildBottomNav(context),
+      body: useRail
+          ? Row(
+              children: [
+                _buildNavigationRail(context),
+                VerticalDivider(
+                  width: 1,
+                  thickness: 1,
+                  color: isDark ? Colors.white12 : Colors.black12,
+                ),
+                Expanded(
+                  child: AnimatedSwitcher(
+                    duration: DesignTokens.animNormal,
+                    child: _screens[_currentIndex],
+                  ),
+                ),
+              ],
+            )
+          : AnimatedSwitcher(
+              duration: DesignTokens.animNormal,
+              child: _screens[_currentIndex],
+            ),
+      bottomNavigationBar: useRail ? null : _buildBottomNav(context),
     );
   }
 
@@ -94,17 +152,9 @@ class _HomeScreenState extends State<HomeScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           // App logo
-          Container(
-            padding: const EdgeInsets.all(DesignTokens.space8),
-            decoration: BoxDecoration(
-              gradient: AppTheme.primaryGradient,
-              borderRadius: BorderRadius.circular(DesignTokens.radiusSmall),
-            ),
-            child: const Icon(
-              Icons.eco,
-              color: Colors.white,
-              size: DesignTokens.iconMedium,
-            ),
+          AppLogo(
+            size: 40,
+            borderRadius: DesignTokens.radiusSmall,
           ),
           const SizedBox(width: DesignTokens.space12),
           // App name and title - Wrap in Flexible/FittedBox for responsiveness
@@ -258,6 +308,69 @@ class _HomeScreenState extends State<HomeScreen> {
       case 4: return 'settings';
       default: return 'dashboard';
     }
+  }
+
+  Widget _buildNavigationRail(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final settings = context.watch<SettingsProvider>();
+    final lang = settings.languageCode;
+    final screenWidth = MediaQuery.of(context).size.width;
+
+    return NavigationRail(
+      selectedIndex: _currentIndex,
+      onDestinationSelected: (index) => setState(() => _currentIndex = index),
+      backgroundColor: isDark ? AppTheme.cardDark : AppTheme.cardLight,
+      selectedIconTheme: const IconThemeData(color: AppTheme.primaryGreen),
+      unselectedIconTheme: IconThemeData(
+        color: isDark ? Colors.white38 : Colors.grey.shade400,
+      ),
+      selectedLabelTextStyle: const TextStyle(
+        color: AppTheme.primaryGreen,
+        fontWeight: FontWeight.bold,
+        fontSize: 12,
+      ),
+      unselectedLabelTextStyle: TextStyle(
+        color: isDark ? Colors.white38 : Colors.grey.shade400,
+        fontSize: 12,
+      ),
+      labelType: screenWidth >= 900
+          ? NavigationRailLabelType.selected
+          : NavigationRailLabelType.none,
+      extended: screenWidth >= 1100,
+      destinations: [
+        NavigationRailDestination(
+          icon: const Icon(Icons.dashboard_outlined),
+          selectedIcon: const Icon(Icons.dashboard),
+          label: Text(AppLocalizations.get('dashboard', lang)),
+        ),
+        NavigationRailDestination(
+          icon: const Icon(Icons.bar_chart_outlined),
+          selectedIcon: const Icon(Icons.bar_chart),
+          label: Text(AppLocalizations.get('graphs', lang)),
+        ),
+        NavigationRailDestination(
+          icon: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              gradient: AppTheme.primaryGradient,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.psychology, color: Colors.white, size: 20),
+          ),
+          label: Text(AppLocalizations.get('ai_insights', lang)),
+        ),
+        NavigationRailDestination(
+          icon: const Icon(Icons.notifications_outlined),
+          selectedIcon: const Icon(Icons.notifications),
+          label: Text(AppLocalizations.get('alerts', lang)),
+        ),
+        NavigationRailDestination(
+          icon: const Icon(Icons.settings_outlined),
+          selectedIcon: const Icon(Icons.settings),
+          label: Text(AppLocalizations.get('settings', lang)),
+        ),
+      ],
+    );
   }
 
   Widget _buildBottomNav(BuildContext context) {

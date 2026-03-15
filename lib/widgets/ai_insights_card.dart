@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../services/ai_service.dart';
 import '../utils/localization.dart';
+
 
 /// AI Insights Card Widget
 class AIInsightsCard extends StatefulWidget {
@@ -99,6 +101,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
                       ),
+                      softWrap: true,
                     ),
                     Text(
                       widget.languageCode == 'ta'
@@ -110,6 +113,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
                         color: Colors.white.withOpacity(0.9),
                         fontSize: 13,
                       ),
+                      softWrap: true,
                     ),
                   ],
                 ),
@@ -216,15 +220,19 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
                   ),
                 ),
                 const SizedBox(width: 12),
-                Text(
-                  AppLocalizations.get('ai_insights', widget.languageCode),
-                  style: TextStyle(
-                    color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
+                Expanded(
+                  child: Text(
+                    AppLocalizations.get('ai_insights', widget.languageCode),
+                    style: TextStyle(
+                      color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 8),
                 if (widget.onPlayAudio != null)
                   IconButton(
                     onPressed: widget.onPlayAudio,
@@ -336,7 +344,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '${widget.languageCode != 'en' ? AppLocalizations.get('predicted_disease', widget.languageCode) : 'Predicted Disease'}',
+                        AppLocalizations.get('predicted_disease', widget.languageCode),
                         style: TextStyle(
                           color: isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight,
                           fontSize: 11,
@@ -373,7 +381,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
           // Description
           if (insight.descriptionDetails != null) ...[
             _buildSection(
-              title: widget.languageCode != 'en' ? AppLocalizations.get('description', widget.languageCode) : 'Description',
+              title: AppLocalizations.get('description', widget.languageCode),
               icon: Icons.info_outline,
               color: const Color(0xFF667eea),
               isDark: isDark,
@@ -426,7 +434,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
           // Why Now
           if (insight.whyNowDetails != null) ...[
             _buildSection(
-              title: widget.languageCode != 'en' ? AppLocalizations.get('why_now', widget.languageCode) : 'Why it affects your crop now?',
+              title: AppLocalizations.get('why_now', widget.languageCode),
               icon: Icons.warning_amber_rounded,
               color: AppTheme.warning,
               isDark: isDark,
@@ -451,6 +459,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
                               color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
                               height: 1.5,
                             ),
+                            softWrap: true,
                           ),
                         ),
                       ],
@@ -472,8 +481,12 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
                 border: Border.all(color: Colors.orange.withOpacity(0.3)),
               ),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.calendar_month, color: Colors.orange, size: 20),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Icon(Icons.calendar_month, color: Colors.orange, size: 20),
+                  ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
@@ -482,6 +495,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
                         color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
                         fontSize: 13,
                       ),
+                      softWrap: true,
                     ),
                   ),
                 ],
@@ -493,7 +507,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
           // Prevention Steps
           if (insight.preventionSteps != null && insight.preventionSteps!.isNotEmpty) ...[
             _buildSection(
-              title: widget.languageCode != 'en' ? AppLocalizations.get('prevention', widget.languageCode) : '🛡️ How to Prevent',
+              title: '🛡️ ${AppLocalizations.get('prevention_title', widget.languageCode)}',
               icon: Icons.shield_outlined,
               color: AppTheme.success,
               isDark: isDark,
@@ -531,6 +545,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
                               color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
                               height: 1.5,
                             ),
+                            softWrap: true,
                           ),
                         ),
                       ],
@@ -545,7 +560,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
           // Chemical Control
           if (insight.chemicalControl != null && insight.chemicalControl!.isNotEmpty) ...[
             _buildSection(
-              title: widget.languageCode != 'en' ? AppLocalizations.get('chemical_control', widget.languageCode) : '🧪 Chemical Control',
+              title: '🧪 ${AppLocalizations.get('chemical_control', widget.languageCode)}',
               icon: Icons.science_outlined,
               color: Colors.purple,
               isDark: isDark,
@@ -593,7 +608,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
                       Icon(Icons.tips_and_updates, color: AppTheme.info, size: 18),
                       const SizedBox(width: 8),
                       Text(
-                        widget.languageCode != 'en' ? AppLocalizations.get('tips', widget.languageCode) : '💡 Tips',
+                        '💡 ${AppLocalizations.get('tips', widget.languageCode)}',
                         style: TextStyle(
                           color: AppTheme.info,
                           fontWeight: FontWeight.bold,
@@ -635,10 +650,78 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
             const SizedBox(height: 16),
           ],
           
-          // Video link
-          if (insight.videoSearchQuery.isNotEmpty) ...[
+          // YouTube Video Player
+          if (insight.video != null) ...[
+            _buildSection(
+              title: AppLocalizations.get('expert_video', widget.languageCode),
+              icon: Icons.play_circle_fill,
+              color: Colors.red,
+              isDark: isDark,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                     // Tap thumbnail to open video on YouTube
+                     GestureDetector(
+                       onTap: () => _openVideoSearch(
+                         insight.videoWatchUrlForLanguage(widget.languageCode) ?? insight.video!.watchUrl,
+                       ),
+                       child: Container(
+                         height: 200,
+                         width: double.infinity,
+                         decoration: BoxDecoration(
+                           borderRadius: BorderRadius.circular(12),
+                           image: DecorationImage(
+                             image: NetworkImage(insight.video!.thumbnailUrl),
+                             fit: BoxFit.cover,
+                           ),
+                         ),
+                         child: Center(
+                           child: Container(
+                             padding: const EdgeInsets.all(12),
+                             decoration: BoxDecoration(
+                               color: Colors.black.withOpacity(0.6),
+                               shape: BoxShape.circle,
+                             ),
+                             child: const Icon(Icons.play_arrow, color: Colors.white, size: 40),
+                           ),
+                         ),
+                       ),
+                     ),
+                   const SizedBox(height: 12),
+                   Text(
+                     insight.video!.title,
+                     style: TextStyle(
+                       color: isDark ? AppTheme.textPrimaryDark : AppTheme.textPrimaryLight,
+                       fontWeight: FontWeight.bold,
+                       fontSize: 14,
+                     ),
+                     maxLines: 2,
+                     overflow: TextOverflow.ellipsis,
+                   ),
+                   const SizedBox(height: 4),
+                   Row(
+                     children: [
+                       const Icon(Icons.person, size: 12, color: Colors.grey),
+                       const SizedBox(width: 4),
+                       Expanded(
+                         child: Text(
+                           insight.video!.channelTitle,
+                           style: TextStyle(
+                             color: isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight,
+                             fontSize: 12,
+                           ),
+                         ),
+                       ),
+                     ],
+                   ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ] else if (insight.videoSearchQuery.isNotEmpty) ...[
+            // Video link fallback if search failed but query exists
             GestureDetector(
-              onTap: () => _openVideoSearch(insight.youtubeSearchUrl),
+              onTap: () => _openVideoSearch(insight.youtubeSearchUrlForLanguage(widget.languageCode)),
               child: Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
@@ -820,7 +903,7 @@ class _AIInsightsCardState extends State<AIInsightsCard> {
           if (insight.videoSearchQuery.isNotEmpty) ...[
             const SizedBox(height: 12),
             GestureDetector(
-              onTap: () => _openVideoSearch(insight.youtubeSearchUrl),
+              onTap: () => _openVideoSearch(insight.youtubeSearchUrlForLanguage(widget.languageCode)),
               child: Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(

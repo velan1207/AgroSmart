@@ -18,6 +18,7 @@ class AIInsightsScreen extends StatefulWidget {
 class _AIInsightsScreenState extends State<AIInsightsScreen> {
   AIInsight? _aiInsight;
   bool _isLoadingInsight = false;
+  bool _isRefreshingForLanguageChange = false;
 
   @override
   void dispose() {
@@ -35,6 +36,19 @@ class _AIInsightsScreenState extends State<AIInsightsScreen> {
         final field = fieldProvider.selectedField;
         final sensorData = fieldProvider.currentSensorData;
         final lang = settingsProvider.languageCode;
+        final hasStaleInsight = _aiInsight != null && _aiInsight!.languageCode != lang;
+
+        if (hasStaleInsight && !_isLoadingInsight && !_isRefreshingForLanguageChange && field != null && sensorData != null) {
+          _isRefreshingForLanguageChange = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) {
+              return;
+            }
+            _requestAIInsight(sensorData, field, lang, fieldProvider).whenComplete(() {
+              _isRefreshingForLanguageChange = false;
+            });
+          });
+        }
 
         return Scaffold(
           backgroundColor: Colors.transparent, // Handled by HomeScreen background
@@ -70,7 +84,11 @@ class _AIInsightsScreenState extends State<AIInsightsScreen> {
                     child: Padding(
                       padding: const EdgeInsets.only(top: 100),
                       child: Text(
-                        'Select a field to get AI insights',
+                        lang == 'ta'
+                            ? 'AI ஆலோசனைகளை பெற ஒரு வயலைத் தேர்ந்தெடுக்கவும்'
+                            : lang == 'hi'
+                                ? 'AI सलाह पाने के लिए एक खेत चुनें'
+                                : 'Select a field to get AI insights',
                         style: TextStyle(
                           color: isDark ? AppTheme.textSecondaryDark : AppTheme.textSecondaryLight,
                         ),
@@ -79,12 +97,12 @@ class _AIInsightsScreenState extends State<AIInsightsScreen> {
                   ),
                 ] else ...[
                   AIInsightsCard(
-                    insight: _aiInsight,
-                    isLoading: _isLoadingInsight,
+                    insight: hasStaleInsight ? null : _aiInsight,
+                    isLoading: _isLoadingInsight || hasStaleInsight,
                     languageCode: lang,
                     isPlayingAudio: TTSService().isSpeaking,
                     onRequestInsight: () => _requestAIInsight(sensorData, field, lang, fieldProvider),
-                    onPlayAudio: _aiInsight != null ? () => _toggleAudioPlayback(lang) : null,
+                    onPlayAudio: !hasStaleInsight && _aiInsight != null ? () => _toggleAudioPlayback(lang) : null,
                   ),
                   const SizedBox(height: 24),
                   
@@ -172,7 +190,8 @@ class _AIInsightsScreenState extends State<AIInsightsScreen> {
     if (tts.isSpeaking) {
       await tts.stop();
     } else if (_aiInsight != null) {
-      await tts.speakInsight(_aiInsight!.summary, lang);
+      final textToSpeak = _aiInsight!.riskIntroduction ?? _aiInsight!.summary;
+      await tts.speakInsight(textToSpeak, lang);
     }
     
     setState(() {});

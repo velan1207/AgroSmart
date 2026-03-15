@@ -279,6 +279,16 @@ class AppLocalizations {
       'ta': 'திருத்து',
       'hi': 'संपादित करें',
     },
+    'back': {
+      'en': 'Back',
+      'ta': 'பின்செல்',
+      'hi': 'वापस',
+    },
+    'crop': {
+      'en': 'Crop',
+      'ta': 'பயிர்',
+      'hi': 'फसल',
+    },
     'fields_registered': {
       'en': 'fields registered',
       'ta': 'வயல்கள் பதிவு செய்யப்பட்டுள்ளன',
@@ -327,10 +337,92 @@ class AppLocalizations {
       'ta': 'தினசரி சராசரி',
       'hi': 'दैनिक औसत',
     },
+    'points': {
+      'en': 'points',
+      'ta': 'புள்ளிகள்',
+      'hi': 'अंक',
+    },
+    'days': {
+      'en': 'days',
+      'ta': 'நாட்கள்',
+      'hi': 'दिन',
+    },
     'statistics': {
       'en': 'Statistics',
       'ta': 'புள்ளிவிவரங்கள்',
       'hi': 'आंकड़े',
+    },
+
+    // Stress Prediction
+    'stress_prediction': {
+      'en': 'Stress Prediction',
+      'ta': 'அழுத்தம் கணிப்பு',
+      'hi': 'तनाव पूर्वानुमान',
+    },
+    'ai_stress_prediction': {
+      'en': 'AI Stress Prediction',
+      'ta': 'AI அழுத்தம் கணிப்பு',
+      'hi': 'AI तनाव पूर्वानुमान',
+    },
+    'analyzing_stress_levels': {
+      'en': 'Analyzing stress levels...',
+      'ta': 'அழுத்த நிலைகள் பகுப்பாய்வு செய்யப்படுகிறது...',
+      'hi': 'तनाव स्तरों का विश्लेषण हो रहा है...',
+    },
+    'tap_run_stress_prediction': {
+      'en': 'Tap to run AI stress prediction',
+      'ta': 'AI அழுத்தம் கணிப்பை இயக்க தட்டவும்',
+      'hi': 'AI तनाव पूर्वानुमान चलाने के लिए टैप करें',
+    },
+    'tap_for_details': {
+      'en': 'Tap for details',
+      'ta': 'விவரங்களுக்கு தட்டவும்',
+      'hi': 'विवरण के लिए टैप करें',
+    },
+    'recommendation': {
+      'en': 'Recommendation',
+      'ta': 'பரிந்துரை',
+      'hi': 'सिफारिश',
+    },
+    'contributing_factors': {
+      'en': 'Contributing Factors',
+      'ta': 'பங்களிக்கும் காரணிகள்',
+      'hi': 'योगदान करने वाले कारक',
+    },
+    'confidence': {
+      'en': 'Confidence',
+      'ta': 'நம்பகத்தன்மை',
+      'hi': 'विश्वसनीयता',
+    },
+    'time_to_stress': {
+      'en': 'Time to Stress',
+      'ta': 'அழுத்தம் வரும்வரை நேரம்',
+      'hi': 'तनाव आने का समय',
+    },
+    'speak_prediction': {
+      'en': 'Speak prediction',
+      'ta': 'கணிப்பை குரலில் வாசிக்க',
+      'hi': 'पूर्वानुमान बोलें',
+    },
+    'low_risk': {
+      'en': 'Low Risk',
+      'ta': 'குறைந்த ஆபத்து',
+      'hi': 'कम जोखिम',
+    },
+    'medium_risk': {
+      'en': 'Medium Risk',
+      'ta': 'மிதமான ஆபத்து',
+      'hi': 'मध्यम जोखिम',
+    },
+    'high_risk': {
+      'en': 'High Risk',
+      'ta': 'அதிக ஆபத்து',
+      'hi': 'उच्च जोखिम',
+    },
+    'critical_risk': {
+      'en': 'Critical Risk',
+      'ta': 'அவசர ஆபத்து',
+      'hi': 'गंभीर जोखिम',
     },
     'current': {
       'en': 'Current',
@@ -675,6 +767,88 @@ class AppLocalizations {
       'en': 'Make sure airplane mode is turned off',
       'ta': 'விமான பயன்முறை ஆஃப் செய்யப்பட்டுள்ளதை உறுதிப்படுத்தவும்',
       'hi': 'सुनिश्चित करें कि हवाई जहाज मोड बंद है',
+    },
+    'predicted_disease': {
+      'en': 'Predicted Disease',
+      'ta': 'கணிக்கப்பட்ட நோய்',
+      'hi': 'अनुमानित रोग',
+    },
+    'expert_video': {
+      'en': 'Expert Video Advice',
+      'ta': 'நிபுணர் வீடியோ ஆலோசனை',
+      'hi': 'विशेषज्ञ वीडियो सलाह',
+    },
+    'why_now': {
+      'en': 'Why it affects your crop now?',
+      'ta': 'இது ஏன் இப்போது உங்கள் பயிரைப் பாதிக்கிறது?',
+      'hi': 'यह अब आपकी फसल को क्यों प्रभावित करता है?',
+    },
+    'description': {
+      'en': 'Description',
+      'ta': 'விளக்கம்',
+      'hi': 'विवरण',
+    },
+    'prevention_title': {
+      'en': 'How to Prevent',
+      'ta': 'எவ்வாறு தடுப்பது',
+      'hi': 'कैसे रोकें',
+    },
+    'chemical_control': {
+      'en': 'Chemical Control',
+      'ta': 'பரிந்துரைக்கப்படும் மருந்துகள்',
+      'hi': 'रासायनिक नियंत्रण',
+    },
+    'tips': {
+      'en': 'Expert Tips',
+      'ta': 'நிபுணர் குறிப்புகள்',
+      'hi': 'विशेषज्ञ सुझाव',
+    },
+    'management_video': {
+      'en': 'Management tips & prevention guide',
+      'ta': 'மேலாண்மை குறிப்புகள் மற்றும் தடுப்பு வழிகாட்டி',
+      'hi': 'प्रबंधन सुझाव और रोकथाम गाइड',
+    },
+
+    // Graph Charts
+    'real_time_trend': {
+      'en': 'Real-Time Trend',
+      'ta': 'நிகழ்நேர போக்கு',
+      'hi': 'रियल-टाइम ट्रेंड',
+    },
+    'hourly_distribution': {
+      'en': 'Hourly Distribution',
+      'ta': 'மணிநேர விநியோகம்',
+      'hi': 'प्रति घंटा वितरण',
+    },
+    'daily_range': {
+      'en': 'Daily Range',
+      'ta': 'தினசரி வரம்பு',
+      'hi': 'दैनिक सीमा',
+    },
+    'monthly_trend': {
+      'en': 'Monthly Trend',
+      'ta': 'மாதாந்திர போக்கு',
+      'hi': 'मासिक रुझान',
+    },
+    'monthly_range': {
+      'en': 'Monthly Range',
+      'ta': 'மாதாந்திர வரம்பு',
+      'hi': 'मासिक सीमा',
+    },
+    'live_gauge': {
+      'en': 'Live Gauge',
+      'ta': 'நிகழ்நேர அளவி',
+      'hi': 'लाइव गेज',
+    },
+    'range': {
+      'en': 'Range',
+      'ta': 'வீச்சு',
+      'hi': 'सीमा',
+    },
+    'soilmoisture': {
+      'en': 'Soil Moisture',
+      'ta': 'மண் ஈரப்பதம்',
+      'hi': 'मिट्टी की नमी',
     },
   };
 

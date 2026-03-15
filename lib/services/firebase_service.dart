@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 import '../models/models.dart';
 
 /// Firebase Service for Crop Monitoring
@@ -13,10 +15,15 @@ class FirebaseService {
 
   final Map<String, StreamController<SensorData>> _sensorStreams = {};
   final Map<String, StreamSubscription> _databaseSubscriptions = {};
+  final Map<String, Timer> _restLivePollTimers = {};
+  static const String _restDatabaseUrl = 'https://fir-42101-default-rtdb.firebaseio.com';
   
   // Firebase Database reference
   DatabaseReference? _database;
   bool _isInitialized = false;
+  bool _useRestApi = false;
+
+  bool get isAvailable => true;
   
   // Current user ID
   String? _currentUserId;
@@ -32,6 +39,8 @@ class FirebaseService {
   // Hardware status monitor
   final StreamController<bool> _hardwareStatusController = StreamController<bool>.broadcast();
   Stream<bool> get hardwareStatusStream => _hardwareStatusController.stream;
+  static const Duration _hardwareHeartbeatTimeout = Duration(seconds: 15);
+  static const Duration _hardwareFutureSkewTolerance = Duration(seconds: 5);
   
   int? _lastHeartbeat;
   DateTime? _lastHeartbeatTime;
@@ -43,6 +52,10 @@ class FirebaseService {
   final List<Field> _realFieldsCache = [];
 
   String get currentUserId {
+    if (_useRestApi) {
+      return _currentUserId ?? 'default_user';
+    }
+
     if (_currentUserId != null) return _currentUserId!;
     try {
       final user = FirebaseAuth.instance.currentUser;
@@ -72,8 +85,26 @@ class FirebaseService {
     debugPrint('[Firebase] User ID set to: $userId');
   }
 
+  /// Use REST API mode when FlutterFire plugins are unavailable on the platform.
+  void configureRestFallback({required bool enabled}) {
+    _useRestApi = enabled;
+    if (enabled) {
+      _database = null;
+      _isInitialized = true;
+      _startStatusCheckTimer();
+      debugPrint('[Firebase] Using REST fallback for cloud backend');
+    }
+  }
+
   /// Initialize Firebase
   Future<void> initialize() async {
+    if (_useRestApi) {
+      _isInitialized = true;
+      _startStatusCheckTimer();
+      debugPrint('[Firebase] REST fallback initialized');
+      return;
+    }
+
     try {
       _database = FirebaseDatabase.instance.ref();
       _isInitialized = true;
@@ -83,7 +114,24 @@ class FirebaseService {
       _startStatusCheckTimer();
     } catch (e) {
       debugPrint('[Firebase] Failed to initialize database: $e');
+    }
+  }
+
+  /// Ensure database is available, auto-initialize if needed
+  Future<bool> _ensureDatabase() async {
+    if (_useRestApi) {
+      return true;
+    }
+
+    if (_database != null) return true;
+    try {
+      _database = FirebaseDatabase.instance.ref();
       _isInitialized = true;
+      debugPrint('[Firebase] Auto-initialized database reference');
+      return true;
+    } catch (e) {
+      debugPrint('[Firebase] Failed to auto-initialize database: $e');
+      return false;
     }
   }
 
@@ -95,13 +143,64 @@ class FirebaseService {
     }
   }
 
+  bool _hasLiveTimestamp(Map<dynamic, dynamic> dataMap) {
+    return dataMap['timestamp'] != null ||
+        dataMap['ts'] != null ||
+        dataMap['time'] != null;
+  }
+
+  bool _isFreshDeviceTimestamp(DateTime timestamp) {
+    final age = DateTime.now().difference(timestamp);
+    if (age.isNegative) {
+      return age.abs() <= _hardwareFutureSkewTolerance;
+    }
+    return age <= _hardwareHeartbeatTimeout;
+  }
+
+  void _updateHardwareStatusFromLiveData(
+    Map<dynamic, dynamic> dataMap,
+    SensorData data,
+  ) {
+    final heartbeat = data.heartbeat;
+    final hasTimestamp = _hasLiveTimestamp(dataMap);
+    final isFresh = hasTimestamp && _isFreshDeviceTimestamp(data.timestamp);
+
+    if (!isFresh || heartbeat == null) {
+      if (!isFresh) {
+        debugPrint(
+          '[Firebase] Ignoring stale live payload for hardware status '
+          '(timestamp: ${data.timestamp.toIso8601String()}, heartbeat: $heartbeat)',
+        );
+      }
+      _lastHeartbeat = heartbeat;
+      _lastHeartbeatTime = hasTimestamp ? data.timestamp : null;
+      _setHardwareStatus(false);
+      return;
+    }
+
+    if (_lastHeartbeat != heartbeat ||
+        _lastHeartbeatTime == null ||
+        data.timestamp.isAfter(_lastHeartbeatTime!)) {
+      _lastHeartbeat = heartbeat;
+      _lastHeartbeatTime = data.timestamp;
+    }
+
+    _setHardwareStatus(true);
+  }
+
   void _startStatusCheckTimer() {
     _statusTimer?.cancel();
     _statusTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
       if (_lastHeartbeatTime != null) {
         final difference = DateTime.now().difference(_lastHeartbeatTime!);
-        // If no heartbeat change for 15 seconds, mark as offline
-        if (difference.inSeconds > 15) {
+        if (difference.isNegative) {
+          if (difference.abs() > _hardwareFutureSkewTolerance) {
+            _setHardwareStatus(false);
+          }
+          return;
+        }
+
+        if (difference > _hardwareHeartbeatTimeout) {
           _setHardwareStatus(false);
         }
       } else {
@@ -116,6 +215,10 @@ class FirebaseService {
   /// Path: /users/{userId}/field
   Future<List<Field>> getFields() async {
     debugPrint('[FirebaseService] getField() called for user: $currentUserId');
+
+    if (_useRestApi) {
+      return _getFieldsViaRest();
+    }
     
     if (!_isInitialized || _database == null) {
       debugPrint('[FirebaseService] Not initialized');
@@ -265,12 +368,28 @@ class FirebaseService {
   }
 
   /// Update field settings
-  Future<void> updateFieldSettings(String cropId, FieldSettings settings) async {
-    if (_database == null) return;
+  /// Path: /users/{userId}/field/settings
+  Future<bool> updateFieldSettings(String cropId, FieldSettings settings) async {
+    if (_useRestApi) {
+      try {
+        await _restPut('users/${currentUserId}/field/settings', settings.toMap());
+        debugPrint('[Firebase][REST] Updated field settings for crop: $cropId');
+        return true;
+      } catch (e) {
+        debugPrint('[Firebase][REST] Error updating settings: $e');
+        return false;
+      }
+    }
+
+    if (!await _ensureDatabase()) return false;
+
     try {
       await _fieldRef.child('settings').set(settings.toMap());
+      debugPrint('[Firebase] Updated field settings for crop: $cropId');
+      return true;
     } catch (e) {
       debugPrint('[Firebase] Error updating settings: $e');
+      return false;
     }
   }
 
@@ -281,8 +400,10 @@ class FirebaseService {
   Stream<SensorData> getSensorDataStream(String cropId) {
     if (!_sensorStreams.containsKey(cropId)) {
       _sensorStreams[cropId] = StreamController<SensorData>.broadcast();
-      
-      if (_database == null) {
+
+      if (_useRestApi) {
+        _startRestLiveDataPolling(cropId);
+      } else if (_database == null) {
         debugPrint('[Firebase] No database, cannot start live listener');
       } else {
         _startLiveDataListener(cropId);
@@ -305,15 +426,8 @@ class FirebaseService {
         _lastDeviceId = data.deviceId ?? cropId;
         
         debugPrint('[Firebase] Live data: temp=${data.temperature}, hum=${data.humidity}, soil=${data.soilMoisture}, pump=${data.pumpStatus}, hb=${data.heartbeat}');
-        
-        // Check heartbeat change
-        if (data.heartbeat != null) {
-          if (_lastHeartbeat != data.heartbeat) {
-            _lastHeartbeat = data.heartbeat;
-            _lastHeartbeatTime = DateTime.now();
-            _setHardwareStatus(true);
-          }
-        }
+
+        _updateHardwareStatusFromLiveData(dataMap, data);
 
         _sensorStreams[cropId]?.add(data);
         _checkAndGenerateAlerts(cropId, data);
@@ -471,32 +585,33 @@ class FirebaseService {
         }
       }
 
-      // Fallback: Check flat /devices/{deviceId}/history structure
-      final deviceId = _lastDeviceId ?? 'field-001';
+      // Fallback: Check flat push-key entries in /users/{userId}/field/history
+      // These are ESP32-written records of the form {humidity, soilMoisture, temperature, timestamp}
       try {
-        debugPrint('[Firebase] Checking fallback history path: /devices/$deviceId/history');
-        final deviceHistoryRef = _database!.child('devices/$deviceId/history');
-        final deviceSnapshot = await deviceHistoryRef.orderByChild('timestamp')
-            .startAt(startDate.millisecondsSinceEpoch)
-            .endAt(endDate.millisecondsSinceEpoch)
+        debugPrint('[Firebase] Checking fallback flat history in: users/$currentUserId/field/history');
+        final flatHistoryRef = _fieldRef.child('history');
+        final flatSnapshot = await flatHistoryRef
+            .orderByChild('timestamp')
+            .startAt(startDate.millisecondsSinceEpoch.toDouble())
+            .endAt(endDate.millisecondsSinceEpoch.toDouble())
             .limitToLast(300)
             .get();
-        
-        if (deviceSnapshot.exists && deviceSnapshot.value != null) {
-          final historyMap = deviceSnapshot.value as Map<dynamic, dynamic>;
+
+        if (flatSnapshot.exists && flatSnapshot.value != null) {
+          final historyMap = flatSnapshot.value as Map<dynamic, dynamic>;
           historyMap.forEach((key, value) {
             if (value is Map) {
               final ts = value['timestamp'];
               if (ts != null) {
-                final sensorData = SensorData.fromLiveMap(value as Map<dynamic, dynamic>, deviceId: deviceId);
+                final sensorData = SensorData.fromLiveMap(value as Map<dynamic, dynamic>, deviceId: cropId);
                 allRecords.add(sensorData);
               }
             }
           });
-          debugPrint('[Firebase] Fetched ${allRecords.length} records from fallback path');
+          debugPrint('[Firebase] Fetched flat history entries: ${allRecords.length} total records');
         }
       } catch (e) {
-        debugPrint('[Firebase] Fallback history error: $e');
+        debugPrint('[Firebase] Flat history fallback error: $e');
       }
 
       // Sort by timestamp
@@ -655,14 +770,60 @@ class FirebaseService {
 
   // ==================== PUMP CONTROL ====================
 
-  /// Control pump - update the live/pumpStatus
-  /// Path: /users/{userId}/crops/{cropId}/live/pumpStatus
+  /// Control pump - write to /live/pumpCommand
+  /// The ESP reads pumpCommand and writes pumpStatus (actual relay state).
+  /// Path: /users/{userId}/field/live/pumpCommand
   Future<bool> controlPump(String cropId, bool turnOn) async {
-    if (_database == null) return false;
+    if (_useRestApi) {
+      try {
+        final commandPaths = <String>{
+          'users/${currentUserId}/field/live/pumpCommand',
+          // Firmware sample uses default_user; mirror command for compatibility.
+          'users/default_user/field/live/pumpCommand',
+        };
+
+        for (final path in commandPaths) {
+          await _restPut(path, turnOn);
+        }
+
+        debugPrint('[Firebase][REST] Pump command ${turnOn ? 'ON' : 'OFF'} for crop: $cropId');
+
+        final fieldIndex = _realFieldsCache.indexWhere((f) => f.id == cropId);
+        if (fieldIndex != -1) {
+          _realFieldsCache[fieldIndex].isPumpOn = turnOn;
+
+          _alertController.add(Alert(
+            id: 'alert-${DateTime.now().millisecondsSinceEpoch}',
+            fieldId: cropId,
+            fieldName: _realFieldsCache[fieldIndex].displayName,
+            type: turnOn ? AlertType.pumpActivated : AlertType.pumpDeactivated,
+            severity: AlertSeverity.info,
+            message: turnOn
+                ? 'Irrigation pump has been activated.'
+                : 'Irrigation pump has been deactivated.',
+            timestamp: DateTime.now(),
+          ));
+        }
+
+        return true;
+      } catch (e) {
+        debugPrint('[Firebase][REST] Error controlling pump: $e');
+        return false;
+      }
+    }
+
+    if (!await _ensureDatabase()) return false;
 
     try {
-      await _fieldRef.child('live/pumpStatus').set(turnOn);
-      debugPrint('[Firebase] Pump ${turnOn ? 'ON' : 'OFF'} for crop: $cropId');
+      // Write to pumpCommand (ESP reads this)
+      await _fieldRef.child('live/pumpCommand').set(turnOn);
+
+      // Mirror to default_user path for firmware compatibility when app userId differs.
+      if (currentUserId != 'default_user') {
+        await _database!.child('users/default_user/field/live/pumpCommand').set(turnOn);
+      }
+
+      debugPrint('[Firebase] Pump command ${turnOn ? 'ON' : 'OFF'} for crop: $cropId');
       
       // Update cache
       final fieldIndex = _realFieldsCache.indexWhere((f) => f.id == cropId);
@@ -801,9 +962,30 @@ class FirebaseService {
     }
   }
 
-  /// Get pump status
-  /// Path: /users/{userId}/crops/{cropId}/live/pumpStatus
+  /// Get pump status (actual relay state, written by ESP8266)
+  /// Path: /users/{userId}/field/live/pumpStatus
   Future<bool> getPumpStatus(String cropId) async {
+    if (_useRestApi) {
+      final live = await _restGet('users/${currentUserId}/field/live');
+      if (live is Map && live['pumpStatus'] != null) {
+        final val = live['pumpStatus'];
+        return val is bool ? val : val.toString().toLowerCase() == 'true' || val == 1;
+      }
+
+      // Fallback for firmware configured with USER_ID = default_user.
+      if (currentUserId != 'default_user') {
+        final fallbackLive = await _restGet('users/default_user/field/live');
+        if (fallbackLive is Map && fallbackLive['pumpStatus'] != null) {
+          final fallbackVal = fallbackLive['pumpStatus'];
+          return fallbackVal is bool
+              ? fallbackVal
+              : fallbackVal.toString().toLowerCase() == 'true' || fallbackVal == 1;
+        }
+      }
+
+      return false;
+    }
+
     if (_database == null) return false;
 
     try {
@@ -950,24 +1132,71 @@ class FirebaseService {
   
   /// Get user profile from Firebase
   /// Path: /users/{userId}/profile
+  /// Also checks if the user node exists at all (e.g. data from ESP32)
   Future<UserProfile?> getUserProfile(String uid) async {
-    if (_database == null) return null;
+    if (_useRestApi) {
+      return _getUserProfileViaRest(uid);
+    }
+
+    if (!await _ensureDatabase()) {
+      debugPrint('[Firebase] getUserProfile: Cannot connect to Firebase.');
+      return null;
+    }
 
     try {
-      final snapshot = await _database!.child('users/$uid/profile').get();
-      if (snapshot.exists) {
-        return UserProfile.fromMap(uid, {'profile': snapshot.value as Map<dynamic, dynamic>});
+      // 1. Try the explicit profile node first
+      debugPrint('[Firebase] Checking profile at: users/$uid/profile');
+      final profileSnapshot = await _database!.child('users/$uid/profile').get();
+      if (profileSnapshot.exists && profileSnapshot.value != null) {
+        debugPrint('[Firebase] Found profile node for $uid');
+        return UserProfile.fromMap(uid, {'profile': profileSnapshot.value as Map<dynamic, dynamic>});
       }
-      
-      // Fallback: try reading the user node directly
+
+      // 2. Check if user node exists at all (ESP32 may have created /users/{uid}/field/...)
+      debugPrint('[Firebase] No profile node. Checking user node: users/$uid');
       final userSnapshot = await _database!.child('users/$uid').get();
-      if (userSnapshot.exists) {
-        return UserProfile.fromMap(uid, userSnapshot.value as Map<dynamic, dynamic>);
+      if (userSnapshot.exists && userSnapshot.value != null) {
+        debugPrint('[Firebase] User node exists for $uid (likely ESP32-created). Data keys: ${(userSnapshot.value as Map?)?.keys}');
+        
+        // Try to extract profile data from the user node if it has profile-like fields
+        final userData = userSnapshot.value;
+        if (userData is Map) {
+          // If user node has a 'profile' map inside it
+          if (userData.containsKey('profile') && userData['profile'] is Map) {
+            return UserProfile.fromMap(uid, userData as Map<dynamic, dynamic>);
+          }
+          // If user node has a 'name' field directly
+          if (userData.containsKey('name')) {
+            return UserProfile.fromMap(uid, userData as Map<dynamic, dynamic>);
+          }
+        }
+        
+        // User node exists but no profile data — return a minimal profile
+        // so the setup screen knows the user ID is valid
+        debugPrint('[Firebase] User node exists but no profile. Returning minimal profile.');
+        return UserProfile(uid: uid, name: 'User');
       }
+
+      debugPrint('[Firebase] No user data found for $uid');
     } catch (e) {
-      debugPrint('[Firebase] Error fetching user profile: $e');
+      debugPrint('[Firebase] Error fetching user profile for $uid: $e');
     }
     return null;
+  }
+
+  /// Check if a user node exists at all in Firebase
+  /// Path: /users/{userId}
+  /// Returns true even if there's no profile — just any data (e.g. sensor data from ESP32)
+  Future<bool> userNodeExists(String uid) async {
+    if (_database == null) return false;
+
+    try {
+      final snapshot = await _database!.child('users/$uid').get();
+      return snapshot.exists;
+    } catch (e) {
+      debugPrint('[Firebase] Error checking user node: $e');
+      return false;
+    }
   }
 
   /// Get user profile stream for real-time updates
@@ -987,6 +1216,12 @@ class FirebaseService {
   /// Update user profile
   /// Path: /users/{userId}/profile
   Future<void> updateUserProfile(UserProfile profile) async {
+    if (_useRestApi) {
+      await _restPatch('users/${profile.uid}/profile', profile.toMap());
+      debugPrint('[Firebase] User profile updated via REST');
+      return;
+    }
+
     if (_database == null) return;
 
     try {
@@ -999,6 +1234,11 @@ class FirebaseService {
 
   /// Update last active timestamp
   Future<void> updateLastActive(String uid) async {
+    if (_useRestApi) {
+      await _restPut('users/$uid/profile/lastActive', DateTime.now().millisecondsSinceEpoch);
+      return;
+    }
+
     if (_database == null) return;
 
     try {
@@ -1009,14 +1249,31 @@ class FirebaseService {
   }
 
   // ==================== DEVICE STATUS METHODS ====================
-  
+  // Reads from /users/{userId}/field/live — no separate deviceStatus collection.
+
+  DeviceStatus _deviceStatusFromLive(Map<dynamic, dynamic> liveData) {
+    final deviceId = liveData['deviceId']?.toString() ?? currentUserId;
+    final ts = liveData['timestamp'];
+    final lastSeen = ts != null
+        ? DateTime.fromMillisecondsSinceEpoch(ts is int ? ts : int.tryParse(ts.toString()) ?? 0)
+        : DateTime.now();
+    final age = DateTime.now().difference(lastSeen);
+    final isOnline = !age.isNegative && age <= _hardwareHeartbeatTimeout;
+    return DeviceStatus(
+      deviceId: deviceId,
+      isOnline: isOnline,
+      isConnected: isOnline,
+      lastSeen: lastSeen,
+    );
+  }
+
   Future<DeviceStatus?> getDeviceStatus(String deviceId) async {
-    if (_database == null) return null;
+    if (!await _ensureDatabase()) return null;
 
     try {
-      final snapshot = await _database!.child('deviceStatus/$deviceId').get();
-      if (snapshot.exists) {
-        return DeviceStatus.fromMap(deviceId, snapshot.value as Map<dynamic, dynamic>);
+      final snapshot = await _fieldRef.child('live').get();
+      if (snapshot.exists && snapshot.value != null) {
+        return _deviceStatusFromLive(snapshot.value as Map<dynamic, dynamic>);
       }
     } catch (e) {
       debugPrint('[Firebase] Error fetching device status: $e');
@@ -1027,43 +1284,158 @@ class FirebaseService {
   Stream<DeviceStatus?> getDeviceStatusStream(String deviceId) {
     if (_database == null) return Stream.value(null);
 
-    return _database!.child('deviceStatus/$deviceId').onValue.map((event) {
-      if (event.snapshot.exists) {
-        return DeviceStatus.fromMap(deviceId, event.snapshot.value as Map<dynamic, dynamic>);
+    return _fieldRef.child('live').onValue.map((event) {
+      if (event.snapshot.exists && event.snapshot.value != null) {
+        return _deviceStatusFromLive(event.snapshot.value as Map<dynamic, dynamic>);
       }
       return null;
     });
   }
 
   Future<Map<String, DeviceStatus>> getAllDeviceStatuses() async {
-    if (_database == null) return {};
-
-    try {
-      final snapshot = await _database!.child('deviceStatus').get();
-      if (snapshot.exists) {
-        final statuses = <String, DeviceStatus>{};
-        final data = snapshot.value as Map<dynamic, dynamic>;
-        data.forEach((key, value) {
-          statuses[key.toString()] = DeviceStatus.fromMap(
-            key.toString(),
-            value as Map<dynamic, dynamic>,
-          );
-        });
-        return statuses;
-      }
-    } catch (e) {
-      debugPrint('[Firebase] Error fetching all device statuses: $e');
+    final status = await getDeviceStatus(currentUserId);
+    if (status != null) {
+      return {status.deviceId: status};
     }
     return {};
   }
 
   Future<void> updateDeviceStatus(DeviceStatus status) async {
-    if (_database == null) return;
+    // Device status is written by the ESP32 hardware; no manual update needed.
+    debugPrint('[Firebase] updateDeviceStatus: managed by ESP32 hardware via field/live');
+  }
 
+  Future<List<Field>> _getFieldsViaRest() async {
     try {
-      await _database!.child('deviceStatus/${status.deviceId}').set(status.toMap());
+      final fieldData = await _restGet('users/${currentUserId}/field');
+      if (fieldData is Map) {
+        final field = Field.fromMap('main_field', fieldData);
+        _realFieldsCache
+          ..clear()
+          ..add(field);
+        debugPrint('[FirebaseService] Loaded single field from REST');
+        return [field];
+      }
+
+      final cropsData = await _restGet('users/${currentUserId}/crops');
+      if (cropsData is Map && cropsData.isNotEmpty) {
+        final firstCropId = cropsData.keys.first.toString();
+        final firstCropMap = cropsData[firstCropId];
+        if (firstCropMap is Map) {
+          final field = Field.fromMap('main_field', firstCropMap);
+          _realFieldsCache
+            ..clear()
+            ..add(field);
+          debugPrint('[FirebaseService] Loaded legacy field from REST');
+          return [field];
+        }
+      }
     } catch (e) {
-      debugPrint('[Firebase] Error updating device status: $e');
+      debugPrint('[Firebase] Error fetching field via REST: $e');
+    }
+
+    debugPrint('[FirebaseService] No field found for user via REST: $currentUserId');
+    return [];
+  }
+
+  Future<UserProfile?> _getUserProfileViaRest(String uid) async {
+    try {
+      debugPrint('[Firebase] Checking profile via REST at: users/$uid/profile');
+      final profileData = await _restGet('users/$uid/profile');
+      if (profileData is Map) {
+        debugPrint('[Firebase] Found profile node for $uid via REST');
+        return UserProfile.fromMap(uid, {'profile': profileData});
+      }
+
+      debugPrint('[Firebase] No profile node. Checking user node via REST: users/$uid');
+      final userData = await _restGet('users/$uid');
+      if (userData is Map) {
+        if (userData.containsKey('profile') && userData['profile'] is Map) {
+          return UserProfile.fromMap(uid, userData);
+        }
+        if (userData.containsKey('name')) {
+          return UserProfile.fromMap(uid, userData);
+        }
+        return UserProfile(uid: uid, name: 'User');
+      }
+    } catch (e) {
+      debugPrint('[Firebase] Error fetching user profile via REST for $uid: $e');
+    }
+    return null;
+  }
+
+  void _startRestLiveDataPolling(String cropId) {
+    _restLivePollTimers[cropId]?.cancel();
+
+    Future<void> pollOnce() async {
+      try {
+        final liveData = await _restGet('users/${currentUserId}/field/live');
+        if (liveData is! Map) {
+          return;
+        }
+
+        debugPrint('[Firebase] Raw map via REST: $liveData');
+        final data = SensorData.fromLiveMap(liveData, deviceId: cropId);
+        _lastDeviceId = data.deviceId ?? cropId;
+
+        _updateHardwareStatusFromLiveData(liveData, data);
+
+        _sensorStreams[cropId]?.add(data);
+        _checkAndGenerateAlerts(cropId, data);
+
+        final fieldIndex = _realFieldsCache.indexWhere((f) => f.id == cropId);
+        if (fieldIndex != -1) {
+          _realFieldsCache[fieldIndex].isPumpOn = data.pumpStatus;
+          _realFieldsCache[fieldIndex].latestData = data;
+        }
+      } catch (e) {
+        debugPrint('[Firebase] Error polling live data via REST for $cropId: $e');
+      }
+    }
+
+    pollOnce();
+    _restLivePollTimers[cropId] = Timer.periodic(const Duration(seconds: 3), (_) {
+      pollOnce();
+    });
+  }
+
+  Future<dynamic> _restGet(String path) async {
+    final uri = Uri.parse('$_restDatabaseUrl/$path.json');
+    final response = await http.get(uri).timeout(const Duration(seconds: 5));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('REST GET failed for $path: ${response.statusCode}');
+    }
+
+    if (response.body == 'null' || response.body.isEmpty) {
+      return null;
+    }
+
+    return jsonDecode(response.body);
+  }
+
+  Future<void> _restPatch(String path, Map<String, dynamic> data) async {
+    final uri = Uri.parse('$_restDatabaseUrl/$path.json');
+    final response = await http.patch(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(data),
+    ).timeout(const Duration(seconds: 5));
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('REST PATCH failed for $path: ${response.statusCode}');
+    }
+  }
+
+  Future<void> _restPut(String path, dynamic data) async {
+    final uri = Uri.parse('$_restDatabaseUrl/$path.json');
+    final response = await http.put(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(data),
+    ).timeout(const Duration(seconds: 5));
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('REST PUT failed for $path: ${response.statusCode}');
     }
   }
 

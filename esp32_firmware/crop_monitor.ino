@@ -1,594 +1,488 @@
 /*
- * ESP32 Crop Monitoring System Firmware - AgroSmart
+ * AgroSmart ESP8266 Firmware v4.0 (Memory-Optimized)
  * 
- * Firebase Project: AgroSmart (fir-42101)
- * 
- * This firmware reads sensor data (DHT22, Soil Moisture) and sends
- * it to Firebase Realtime Database for the Flutter app to consume.
- * 
- * Hardware Connections:
- * - DHT22: Data pin -> GPIO4
- * - Soil Moisture Sensor: Analog -> GPIO34
- * - Relay (Pump Control): GPIO25
- * 
- * Libraries Required (Install via Arduino Library Manager):
- * - Firebase ESP Client by Mobizt
- * - DHT sensor library by Adafruit
- * - Adafruit Unified Sensor
+ * Single FirebaseData object + polling (no stream).
+ * Saves ~10KB RAM vs stream approach.
+ *
+ * Paths:
+ *   Live:     /users/{USER_ID}/field/live
+ *   Settings: /users/{USER_ID}/field/settings
+ *   History:  /users/{USER_ID}/field/history/{yyyy-mm}/days/{dd-mm-yyyy}/records/{hh:mm}
+ *   DailyAvg: /users/{USER_ID}/field/history/{yyyy-mm}/days/{dd-mm-yyyy}/dailyAvg
+ *   Alerts:   /users/{USER_ID}/field/alerts
+ *
+ * Pump control:
+ *   App writes → /live/pumpCommand   (ESP reads)
+ *   ESP writes → /live/pumpStatus    (App reads for display)
  */
 
-#include <WiFi.h>
-#include <Firebase_ESP_Client.h>
-#include "DHT.h"
-#include <addons/TokenHelper.h>
-#include <addons/RTDBHelper.h>
+#include <ESP8266WiFi.h>
+#include <FirebaseESP8266.h>
+#include <DHT.h>
+#include <time.h>
 
-// ===========================================
-// CONFIGURATION - UPDATE THESE VALUES
-// ===========================================
+// ── CONFIG ──
+char ssid[] = "CITAR-NW-BH";
+char password[] = "CIT@R@98";
 
-// WiFi credentials - UPDATE THESE
-#define WIFI_SSID "VVELAN M"
-#define WIFI_PASSWORD "velan123"
+#define FIREBASE_HOST "fir-42101-default-rtdb.firebaseio.com"
+#define FIREBASE_AUTH "svXqzvzdtZSqz8IaqBADw3POATaJLcPiCC5yFwrn"
+#define USER_ID       "default_user"
+#define DEVICE_ID     "field-001"
 
-// Firebase configuration - AgroSmart Project
-#define API_KEY "AIzaSyDummyKeyReplaceMeWithActualKey"  // Get from Firebase Console -> Project Settings -> Web API Key
-#define DATABASE_URL "https://fir-42101-default-rtdb.firebaseio.com"  // Your Realtime Database URL
+#define NTP_SERVER    "pool.ntp.org"
+#define GMT_OFFSET    19800  // IST UTC+5:30
 
-// Device ID - unique for each ESP32/field
-// Use one of: field-001, field-002, field-003, field-004
-#define DEVICE_ID "field-001"
+// ── PINS ──
+#define DHTPIN    D4
+#define DHTTYPE   DHT22
+#define SOIL_PIN  A0
+#define PUMP_PIN  D1
 
-// ===========================================
-// Pin Definitions
-// ===========================================
+// ── INTERVALS ──
+#define LIVE_INTERVAL      10000UL   // 10s  - sensor + poll
+#define HISTORY_INTERVAL   300000UL  // 5min - graph data
+#define DAILY_AVG_INTERVAL 900000UL  // 15min
+#define PUMP_COOLDOWN      30000UL   // 30s min between toggles
+#define SETTINGS_INTERVAL  15000UL   // 15s - poll settings
 
-#define DHTPIN 4              // DHT22 data pin
-#define DHTTYPE DHT22         // DHT22 sensor type
-#define SOIL_MOISTURE_PIN 34  // Soil moisture analog pin
-#define RELAY_PIN 25          // Relay control pin for pump
-#define LED_PIN 2             // Built-in LED
+// ── SOIL CALIBRATION ──
+#define SOIL_RAW_DRY  1024
+#define SOIL_RAW_WET  200
 
-// ===========================================
-// Constants
-// ===========================================
-
-#define SAMPLING_INTERVAL 5000    // 5 seconds between readings
-#define WIFI_TIMEOUT 20000        // WiFi connection timeout (20 sec)
-#define FIREBASE_TIMEOUT 10000    // Firebase operation timeout
-
-// Soil moisture calibration (adjust based on your sensor)
-// Capacitive sensor: Lower value = more moisture
-#define SOIL_DRY_VALUE 3500       // ADC value when soil is completely dry
-#define SOIL_WET_VALUE 1500       // ADC value when soil is fully saturated
-
-// ===========================================
-// Global Objects
-// ===========================================
-
+// ── OBJECTS (single FirebaseData = single SSL connection) ──
 DHT dht(DHTPIN, DHTTYPE);
 FirebaseData fbdo;
-FirebaseAuth auth;
-FirebaseConfig config;
+FirebaseConfig fbConfig;
+FirebaseAuth fbAuth;
 
-// ===========================================
-// State Variables
-// ===========================================
+// ── TIMING ──
+unsigned long lastLive     = 0;
+unsigned long lastHistory  = 0;
+unsigned long lastDailyAvg = 0;
+unsigned long lastSettings = 0;
+unsigned long lastPumpToggle = 0;
 
-unsigned long lastSensorRead = 0;
-unsigned long lastFirebaseSync = 0;
-unsigned long lastHistoryPush = 0;
-#define HISTORY_INTERVAL 300000 // 5 minutes between history points
-bool pumpStatus = false;
-bool isConnected = false;
-bool firebaseReady = false;
+// ── SETTINGS (from Firebase) ──
+bool  autoIrrigation = false;
+float minMoisture    = 35.0;
+float maxMoisture    = 75.0;
+float maxTemperature = 32.0;
 
-// Thresholds from Firebase
-float minMoistureThreshold = 35.0;
-bool autoIrrigationEnabled = false;
-unsigned long lastSettingsFetch = 0;
-#define SETTINGS_FETCH_INTERVAL 60000 // Fetch settings every minute
+// ── SENSOR VALUES ──
+float currentTemp     = 0;
+float currentHumidity = 0;
+int   currentMoisture = 0;
 
-// Sensor data structure
-struct SensorData {
-  float temperature;
-  float humidity;
-  float soilMoisture;
-  unsigned long timestamp;
-  bool valid;
-};
+// ── PUMP STATE ──
+bool isPumpRunning        = false;
+bool manualPumpCmd        = false;
+bool manualOverrideActive = false;
+unsigned long manualOverrideTime = 0;
+#define MANUAL_OVERRIDE_WINDOW 60000UL  // 60s
 
-// Offline buffer for when network is unavailable
-#define BUFFER_SIZE 20
-SensorData offlineBuffer[BUFFER_SIZE];
-int bufferIndex = 0;
-int bufferCount = 0;
+// ── MISC ──
+int  heartbeat    = 0;
+bool ntpSynced    = false;
+float dailyTempSum = 0, dailyHumSum = 0, dailyMoistSum = 0;
+int   dailyCount   = 0;
+int   currentDay   = -1;
 
-// ===========================================
-// Function Prototypes
-// ===========================================
+// ── HELPERS ──
 
-void connectWiFi();
-void initFirebase();
-SensorData readSensors();
-bool sendDataToFirebase(SensorData data, bool pushHistory);
-void syncOfflineBuffer();
-void checkPumpCommand();
-void fetchSettings();
-void controlPump(bool state);
-float mapSoilMoisture(int adcValue);
-void storeInBuffer(SensorData data);
-void blinkLED(int times, int delayMs);
+String basePath() {
+  return String(F("/users/")) + USER_ID + F("/field");
+}
 
-// ===========================================
-// Setup
-// ===========================================
+bool isNtpValid() {
+  return time(nullptr) > 1577836800;
+}
+
+String getMonthKey() {
+  time_t now = time(nullptr);
+  struct tm* t = localtime(&now);
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%04d-%02d", t->tm_year + 1900, t->tm_mon + 1);
+  return String(buf);
+}
+
+String getDateKey() {
+  time_t now = time(nullptr);
+  struct tm* t = localtime(&now);
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%02d-%02d-%04d", t->tm_mday, t->tm_mon + 1, t->tm_year + 1900);
+  return String(buf);
+}
+
+String getTimeKey() {
+  time_t now = time(nullptr);
+  struct tm* t = localtime(&now);
+  char buf[6];
+  snprintf(buf, sizeof(buf), "%02d:%02d", t->tm_hour, t->tm_min);
+  return String(buf);
+}
+
+int getDayOfMonth() {
+  time_t now = time(nullptr);
+  return localtime(&now)->tm_mday;
+}
+
+unsigned long getEpoch() {
+  return (unsigned long)time(nullptr);
+}
+
+// ══════════════════════════════════════
+// SETUP
+// ══════════════════════════════════════
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  
-  Serial.println("\n╔══════════════════════════════════════════╗");
-  Serial.println("║   ESP32 Crop Monitoring System           ║");
-  Serial.println("║   AgroSmart - Firebase Project           ║");
-  Serial.println("╚══════════════════════════════════════════╝\n");
-  
-  Serial.printf("Device ID: %s\n", DEVICE_ID);
-  Serial.println();
-  
-  // Initialize pins
-  pinMode(LED_PIN, OUTPUT);
-  pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW);  // Pump off by default
-  
-  // Startup LED indication
-  blinkLED(3, 200);
-  
-  // Initialize DHT sensor
+  delay(500);
+  Serial.println(F("\n[AgroSmart v4.0 - Memory Optimized]"));
+
+  // Pins
+  pinMode(PUMP_PIN, OUTPUT);
+  digitalWrite(PUMP_PIN, HIGH);  // OFF (active LOW)
+  isPumpRunning = false;
+
+  // DHT
   dht.begin();
-  Serial.println("[OK] DHT22 sensor initialized");
-  
-  // Wait for sensor to stabilize
   delay(2000);
-  
-  // Connect to WiFi
-  connectWiFi();
-  
-  // Initialize Firebase
-  if (isConnected) {
-    initFirebase();
+
+  // WiFi
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+  WiFi.begin(ssid, password);
+  Serial.print(F("WiFi"));
+  int tries = 0;
+  while (WiFi.status() != WL_CONNECTED && tries < 40) {
+    delay(500);
+    Serial.print('.');
+    tries++;
   }
-  
-  Serial.println("\n[OK] System ready! Starting monitoring...");
-  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print(F(" OK IP:"));
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println(F(" FAIL"));
+  }
+
+  // NTP
+  configTime(GMT_OFFSET, 0, NTP_SERVER);
+  tries = 0;
+  while (!isNtpValid() && tries < 20) { delay(500); tries++; }
+  ntpSynced = isNtpValid();
+  Serial.printf("NTP: %s\n", ntpSynced ? "OK" : "FAIL");
+
+  // Firebase - single connection
+  fbConfig.database_url = FIREBASE_HOST;
+  fbConfig.signer.tokens.legacy_token = FIREBASE_AUTH;
+  Firebase.begin(&fbConfig, &fbAuth);
+  Firebase.reconnectWiFi(true);
+  fbdo.setBSSLBufferSize(1024, 1024);
+
+  Serial.printf("Heap: %d\n", ESP.getFreeHeap());
+
+  // Fetch initial state
+  fetchSettings();
+  fetchPumpCommand();
+
+  // Sync actual relay state to Firebase
+  String sp = basePath() + F("/live/pumpStatus");
+  Firebase.setBool(fbdo, sp, isPumpRunning);
+
+  Serial.printf("Ready! Auto:%s Min:%.0f Max:%.0f\n",
+    autoIrrigation ? "ON" : "OFF", minMoisture, maxMoisture);
 }
 
-// ===========================================
-// Main Loop
-// ===========================================
+// ══════════════════════════════════════
+// LOOP
+// ══════════════════════════════════════
 
 void loop() {
-  unsigned long currentMillis = millis();
-  
-  // Heartbeat LED - blink every 2 seconds when running
-  static unsigned long lastBlink = 0;
-  if (currentMillis - lastBlink >= 2000) {
-    lastBlink = currentMillis;
-    digitalWrite(LED_PIN, HIGH);
-    delay(50);
-    digitalWrite(LED_PIN, LOW);
-  }
-  
-  // Check WiFi connection
+  // WiFi reconnect
   if (WiFi.status() != WL_CONNECTED) {
-    isConnected = false;
-    Serial.println("[WARN] WiFi disconnected, reconnecting...");
-    connectWiFi();
-    if (isConnected && !firebaseReady) {
-      initFirebase();
-    }
+    Serial.println(F("WiFi lost, reconnecting..."));
+    WiFi.begin(ssid, password);
+    delay(5000);
+    return;
   }
-  
-  // Read sensors at sampling interval
-  if (currentMillis - lastSensorRead >= SAMPLING_INTERVAL) {
-    lastSensorRead = currentMillis;
-    
-    SensorData data = readSensors();
-    
-      if (data.valid) {
-        // Print sensor data
-        Serial.println("┌─────────────────────────────────────────┐");
-        Serial.printf("│ Temperature:    %6.1f °C               │\n", data.temperature);
-        Serial.printf("│ Humidity:       %6.1f %%               │\n", data.humidity);
-        Serial.printf("│ Soil Moisture:  %6.1f %%               │\n", data.soilMoisture);
-        Serial.printf("│ Pump Status:    %s                    │\n", pumpStatus ? "ON " : "OFF");
-        Serial.println("└─────────────────────────────────────────┘");
-        
-        // Auto Irrigation Logic
-        if (autoIrrigationEnabled) {
-          if (data.soilMoisture < minMoistureThreshold && !pumpStatus) {
-            Serial.println("[AUTO] Soil dry! Activating pump...");
-            controlPump(true);
-          } else if (data.soilMoisture >= minMoistureThreshold + 10.0 && pumpStatus) {
-            // Stop pump when it's 10% above threshold (hysteresis)
-            Serial.println("[AUTO] Soil moisture restored. Deactivating pump...");
-            controlPump(false);
-          }
-        }
 
-        if (isConnected && firebaseReady && Firebase.ready()) {
-        // Only push to history at history interval
-        bool shouldPushHistory = false;
-        if (currentMillis - lastHistoryPush >= HISTORY_INTERVAL || lastHistoryPush == 0) {
-          lastHistoryPush = currentMillis;
-          shouldPushHistory = true;
-          Serial.println("[INFO] Detailed history record will be pushed");
-        }
+  // Read sensors
+  readSensors();
 
-        // Send data to Firebase
-        if (sendDataToFirebase(data, shouldPushHistory)) {
-          if (shouldPushHistory) Serial.println("[OK] Data + History sent to Firebase");
-          else Serial.println("[OK] Real-time data updated");
-          
-          // Sync buffered data if any
-          syncOfflineBuffer();
-        } else {
-          // Store in offline buffer
-          storeInBuffer(data);
-          Serial.println("[WARN] Firebase failed, data buffered");
-        }
-        
-        // Check for pump commands from app
-        checkPumpCommand();
-      } else {
-        // Store in offline buffer
-        storeInBuffer(data);
-        Serial.printf("[OFFLINE] Data buffered (%d/%d)\n", bufferCount, BUFFER_SIZE);
-      }
-      
-      Serial.println();
-    } else {
-      Serial.println("[ERROR] Failed to read sensors!");
-    }
+  // Apply pump logic
+  applyPumpLogic();
+
+  unsigned long now = millis();
+
+  // Poll pumpCommand + send live data (every 10s)
+  if (now - lastLive >= LIVE_INTERVAL) {
+    fetchPumpCommand();   // Check if app sent a command
+    updateLiveData();
+    lastLive = now;
   }
-  
-  // Fetch settings from Firebase periodically
-  if (firebaseReady && (currentMillis - lastSettingsFetch >= SETTINGS_FETCH_INTERVAL || lastSettingsFetch == 0)) {
-    lastSettingsFetch = currentMillis;
+
+  // Poll settings (every 15s)
+  if (now - lastSettings >= SETTINGS_INTERVAL) {
     fetchSettings();
+    lastSettings = now;
   }
-  
-  delay(100);
+
+  // History (every 5min)
+  if (now - lastHistory >= HISTORY_INTERVAL || lastHistory == 0) {
+    uploadHistory();
+    lastHistory = now;
+  }
+
+  // Daily average (every 15min)
+  if (now - lastDailyAvg >= DAILY_AVG_INTERVAL || lastDailyAvg == 0) {
+    updateDailyAvg();
+    lastDailyAvg = now;
+  }
+
+  delay(200);
 }
 
-// ===========================================
-// WiFi Connection
-// ===========================================
+// ══════════════════════════════════════
+// SENSORS
+// ══════════════════════════════════════
 
-void connectWiFi() {
-  Serial.print("[...] Connecting to WiFi: ");
-  Serial.println(WIFI_SSID);
-  
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
-  unsigned long startAttempt = millis();
-  int dots = 0;
-  
-  while (WiFi.status() != WL_CONNECTED && 
-         millis() - startAttempt < WIFI_TIMEOUT) {
-    delay(500);
-    Serial.print(".");
-    dots++;
-    if (dots % 20 == 0) Serial.println();
-    
-    // Blink LED while connecting
-    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-  }
-  
-  digitalWrite(LED_PIN, LOW);
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    isConnected = true;
-    Serial.println();
-    Serial.println("[OK] WiFi connected!");
-    Serial.print("     IP Address: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("     Signal Strength: ");
-    Serial.print(WiFi.RSSI());
-    Serial.println(" dBm");
-  } else {
-    isConnected = false;
-    Serial.println();
-    Serial.println("[FAIL] WiFi connection failed!");
-    Serial.println("       Check SSID and password");
-  }
+void readSensors() {
+  int raw = analogRead(SOIL_PIN);
+  currentMoisture = constrain(map(raw, SOIL_RAW_DRY, SOIL_RAW_WET, 0, 100), 0, 100);
+
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  if (!isnan(t)) currentTemp = t;
+  if (!isnan(h)) currentHumidity = h;
 }
 
-// ===========================================
-// Firebase Initialization
-// ===========================================
+// ══════════════════════════════════════
+// PUMP LOGIC
+// ══════════════════════════════════════
 
-void initFirebase() {
-  Serial.println("[...] Initializing Firebase...");
-  
-  config.api_key = API_KEY;
-  config.database_url = DATABASE_URL;
-  
-  // Anonymous authentication (no email/password required)
-  auth.user.email = "";
-  auth.user.password = "";
-  
-  config.token_status_callback = tokenStatusCallback;
-  
-  // Initialize Firebase
-  Firebase.begin(&config, &auth);
-  Firebase.reconnectWiFi(true);
-  
-  // Configure buffer sizes
-  fbdo.setBSSLBufferSize(4096, 1024);
-  fbdo.setResponseSize(2048);
-  
-  // Wait for Firebase to be ready
-  unsigned long startWait = millis();
-  while (!Firebase.ready() && millis() - startWait < 10000) {
-    delay(100);
-  }
-  
-  if (Firebase.ready()) {
-    firebaseReady = true;
-    Serial.println("[OK] Firebase connected!");
-    Serial.print("     Database: ");
-    Serial.println(DATABASE_URL);
-    
-    // Set initial device info
-    Firebase.RTDB.setString(&fbdo, 
-      String("/devices/") + DEVICE_ID + "/name", 
-      "ESP32 Sensor Node");
-    Firebase.RTDB.setBool(&fbdo, 
-      String("/devices/") + DEVICE_ID + "/online", 
-      true);
-  } else {
-    firebaseReady = false;
-    Serial.println("[FAIL] Firebase connection failed!");
-    Serial.println("       Check API_KEY and DATABASE_URL");
-  }
-}
+void applyPumpLogic() {
+  if (autoIrrigation) {
+    unsigned long now = millis();
 
-// ===========================================
-// Sensor Reading
-// ===========================================
-
-SensorData readSensors() {
-  SensorData data;
-  data.valid = false;
-  data.timestamp = millis();
-  
-  // Read DHT22 - try up to 3 times
-  for (int attempt = 0; attempt < 3; attempt++) {
-    float t = dht.readTemperature();
-    float h = dht.readHumidity();
-    
-    if (!isnan(t) && !isnan(h)) {
-      data.temperature = t;
-      data.humidity = h;
-      break;
+    // Manual override window (app command during auto mode)
+    if (manualOverrideActive) {
+      if (now - manualOverrideTime < MANUAL_OVERRIDE_WINDOW) {
+        if (manualPumpCmd != isPumpRunning) {
+          setPumpState(manualPumpCmd);
+        }
+        return;
+      }
+      manualOverrideActive = false;
     }
-    delay(100);
-  }
-  
-  if (isnan(data.temperature) || isnan(data.humidity)) {
-    Serial.println("[ERROR] DHT22 read failed!");
-    return data;
-  }
-  
-  // Read soil moisture (average of 5 readings for stability)
-  long soilSum = 0;
-  for (int i = 0; i < 5; i++) {
-    soilSum += analogRead(SOIL_MOISTURE_PIN);
-    delay(10);
-  }
-  int soilRaw = soilSum / 5;
-  data.soilMoisture = mapSoilMoisture(soilRaw);
-  
-  data.valid = true;
-  return data;
-}
 
-// ===========================================
-// Soil Moisture Mapping
-// ===========================================
+    // Cooldown
+    if (now - lastPumpToggle < PUMP_COOLDOWN && lastPumpToggle != 0) return;
 
-float mapSoilMoisture(int adcValue) {
-  // Map ADC value to percentage (0-100)
-  // Capacitive sensor: Lower ADC = more moisture
-  float moisture = (float)(SOIL_DRY_VALUE - adcValue) / 
-                   (float)(SOIL_DRY_VALUE - SOIL_WET_VALUE) * 100.0;
-  
-  // Clamp to 0-100 range
-  if (moisture < 0) moisture = 0;
-  if (moisture > 100) moisture = 100;
-  
-  return moisture;
-}
+    // Auto ON: soil too dry
+    if (currentMoisture < (int)minMoisture && !isPumpRunning) {
+      setPumpState(true);
+      lastPumpToggle = now;
+      pushAlert("lowMoisture",
+        "Auto-irrigation activated. Soil moisture below threshold.",
+        (float)currentMoisture, minMoisture);
+    }
+    // Auto OFF: soil wet enough
+    else if (currentMoisture >= (int)maxMoisture && isPumpRunning) {
+      setPumpState(false);
+      lastPumpToggle = now;
+      pushAlert("pumpDeactivated",
+        "Auto-irrigation stopped. Soil moisture restored.",
+        (float)currentMoisture, maxMoisture);
+    }
 
-// ===========================================
-// Firebase Data Upload
-// ===========================================
-
-bool sendDataToFirebase(SensorData data, bool pushHistory) {
-  if (!Firebase.ready()) return false;
-  
-  // Path matching the user's database structure: AgroSmart
-  String basePath = "/AgroSmart";
-  
-  // 1. Send DHT22 data (Humidity and Temperature)
-  FirebaseJson dhtJson;
-  dhtJson.set("Humidity", data.humidity);
-  dhtJson.set("Temperature", data.temperature);
-  
-  if (!Firebase.RTDB.setJSON(&fbdo, basePath + "/DHT22", &dhtJson)) {
-    Serial.print("[ERROR] DHT22 update failed: ");
-    Serial.println(fbdo.errorReason());
-    return false;
-  }
-  
-  // 2. Send Soil Moisture
-  if (!Firebase.RTDB.setFloat(&fbdo, basePath + "/SoilMoisture", data.soilMoisture)) {
-    Serial.print("[ERROR] Soil Moisture update failed: ");
-    Serial.println(fbdo.errorReason());
-    return false;
-  }
-  
-  // 3. Send Pump Status
-  if (!Firebase.RTDB.setBool(&fbdo, basePath + "/PumpStatus", pumpStatus)) {
-    Serial.print("[ERROR] Pump Status update failed: ");
-    Serial.println(fbdo.errorReason());
-    return false;
-  }
-
-  // 4. Update additional fields for the app (historical data)
-  FirebaseJson appJson;
-  appJson.set("temperature", data.temperature);
-  appJson.set("humidity", data.humidity);
-  appJson.set("soilMoisture", data.soilMoisture);
-  appJson.set("pumpStatus", pumpStatus);
-  appJson.set("timestamp/.sv", "timestamp");
-  appJson.set("deviceId", DEVICE_ID);
-  
-  // Maintain backward compatibility with the devices/DEVICE_ID/latest path if needed by other app parts
-  String devicePath = "/devices/" + String(DEVICE_ID);
-  Firebase.RTDB.setJSON(&fbdo, devicePath + "/latest", &appJson);
-  
-  if (pushHistory) {
-    Firebase.RTDB.pushJSON(&fbdo, devicePath + "/history", &appJson);
-  }
-  
-  return true;
-}
-
-// ===========================================
-// Offline Buffer Management
-// ===========================================
-
-void storeInBuffer(SensorData data) {
-  if (bufferCount < BUFFER_SIZE) {
-    offlineBuffer[bufferIndex] = data;
-    bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
-    bufferCount++;
   } else {
-    // Buffer full, overwrite oldest
-    offlineBuffer[bufferIndex] = data;
-    bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
-  }
-}
-
-void syncOfflineBuffer() {
-  if (bufferCount == 0) return;
-  
-  Serial.printf("[...] Syncing %d buffered readings...\n", bufferCount);
-  
-  int synced = 0;
-  int startIdx = (bufferIndex - bufferCount + BUFFER_SIZE) % BUFFER_SIZE;
-  
-  for (int i = 0; i < bufferCount; i++) {
-    int idx = (startIdx + i) % BUFFER_SIZE;
-    if (sendDataToFirebase(offlineBuffer[idx], true)) { // Buffered data is always history
-      synced++;
-    } else {
-      break;  // Stop on first failure
+    // Manual mode: follow app command
+    if (manualPumpCmd != isPumpRunning) {
+      setPumpState(manualPumpCmd);
     }
   }
-  
-  if (synced > 0) {
-    Serial.printf("[OK] Synced %d readings\n", synced);
-    bufferCount -= synced;
+}
+
+void setPumpState(bool turnOn) {
+  if (isPumpRunning == turnOn) return;
+  isPumpRunning = turnOn;
+  digitalWrite(PUMP_PIN, turnOn ? LOW : HIGH);
+
+  Serial.printf("PUMP: %s\n", turnOn ? "ON" : "OFF");
+
+  // Write to pumpStatus (ESP owns this, app reads for display)
+  String p = basePath() + F("/live/pumpStatus");
+  if (!Firebase.setBool(fbdo, p, turnOn)) {
+    Serial.println(F("pumpStatus sync fail"));
   }
 }
 
-// ===========================================
-// Pump Control
-// ===========================================
+// ══════════════════════════════════════
+// FIREBASE POLLING (replaces stream)
+// ══════════════════════════════════════
 
-void checkPumpCommand() {
-  String path = "/users/default_user/field/PumpStatus"; // Check app's control path
-  
-  // Also check AgroSmart path for legacy support
-  if (!Firebase.RTDB.getBool(&fbdo, path)) {
-    path = "/AgroSmart/PumpStatus";
-    if (!Firebase.RTDB.getBool(&fbdo, path)) return;
+void fetchPumpCommand() {
+  String p = basePath() + F("/live/pumpCommand");
+  if (Firebase.getBool(fbdo, p)) {
+    bool cmd = fbdo.boolData();
+    if (cmd != manualPumpCmd) {
+      manualPumpCmd = cmd;
+      Serial.printf("PumpCmd: %s\n", cmd ? "ON" : "OFF");
+
+      if (!autoIrrigation) {
+        setPumpState(manualPumpCmd);
+      } else {
+        // In auto mode: activate manual override
+        manualOverrideActive = true;
+        manualOverrideTime = millis();
+        setPumpState(manualPumpCmd);
+      }
+      lastPumpToggle = millis();
+    }
   }
-  
-  bool newStatus = fbdo.boolData();
-  if (newStatus != pumpStatus) {
-    controlPump(newStatus);
-  }
+  // If key doesn't exist yet, that's fine — default is false
 }
 
 void fetchSettings() {
-  if (!Firebase.ready()) return;
-  
-  String path = "/users/default_user/field/settings";
-  Serial.println("[...] Fetching settings from Firebase...");
-  
-  if (Firebase.RTDB.getJSON(&fbdo, path)) {
+  String p = basePath() + F("/settings");
+  if (Firebase.getJSON(fbdo, p)) {
     FirebaseJson &json = fbdo.jsonObject();
-    FirebaseJsonData jsonData;
-    
-    json.get(jsonData, "minMoisture");
-    if (jsonData.success) minMoistureThreshold = jsonData.floatValue;
-    
-    json.get(jsonData, "autoIrrigation");
-    if (jsonData.success) autoIrrigationEnabled = jsonData.boolValue;
-    
-    Serial.printf("[OK] Settings: MinMoisture=%.1f%%, AutoIrrigation=%s\n", 
-                  minMoistureThreshold, autoIrrigationEnabled ? "ON" : "OFF");
+    FirebaseJsonData jd;
+
+    bool prevAuto = autoIrrigation;
+
+    json.get(jd, "autoIrrigation");
+    if (jd.success) autoIrrigation = jd.boolValue;
+
+    json.get(jd, "minMoisture");
+    if (jd.success) minMoisture = jd.floatValue;
+
+    json.get(jd, "maxMoisture");
+    if (jd.success) maxMoisture = jd.floatValue;
+
+    json.get(jd, "maxTemperature");
+    if (jd.success) maxTemperature = jd.floatValue;
+
+    // If auto mode changed, reset override
+    if (prevAuto != autoIrrigation) {
+      manualOverrideActive = false;
+      Serial.printf("Auto: %s\n", autoIrrigation ? "ON" : "OFF");
+    }
   }
 }
 
-void controlPump(bool state) {
-  pumpStatus = state;
-  digitalWrite(RELAY_PIN, state ? HIGH : LOW);
-  
-  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  Serial.printf("     PUMP %s\n", state ? "ACTIVATED 💧" : "DEACTIVATED ⏹️");
-  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  
-  // Log pump action to Firebase
-  if (Firebase.ready()) {
-    // Update both paths to keep app synced
-    Firebase.RTDB.setBool(&fbdo, "/users/default_user/field/PumpStatus", state);
-    Firebase.RTDB.setBool(&fbdo, "/AgroSmart/PumpStatus", state);
-    
-    String path = "/devices/" + String(DEVICE_ID) + "/pumpLog";
-    
-    FirebaseJson json;
-    json.set("action", state ? "ON" : "OFF");
-    json.set("timestamp/.sv", "timestamp");
-    
-    Firebase.RTDB.pushJSON(&fbdo, path, &json);
+// ══════════════════════════════════════
+// LIVE DATA (every 10s)
+// ══════════════════════════════════════
+
+void updateLiveData() {
+  if (isnan(currentTemp) || isnan(currentHumidity)) return;
+
+  heartbeat++;
+
+  FirebaseJson json;
+  json.set("temperature", currentTemp);
+  json.set("humidity", currentHumidity);
+  json.set("soilMoisture", currentMoisture);
+  json.set("heartbeat", heartbeat);
+  json.set("timestamp/.sv", "timestamp");
+  json.set("deviceId", DEVICE_ID);
+  json.set("dht22/temperature", currentTemp);
+  json.set("dht22/humidity", currentHumidity);
+
+  String p = basePath() + F("/live");
+  if (Firebase.updateNode(fbdo, p, json)) {
+    Serial.printf("T:%.1f H:%.1f M:%d%% P:%s HB:%d H:%d\n",
+      currentTemp, currentHumidity, currentMoisture,
+      isPumpRunning ? "ON" : "OFF", heartbeat, ESP.getFreeHeap());
+  } else {
+    Serial.println(F("Live update fail"));
+  }
+
+  // Accumulate for daily avg
+  dailyTempSum += currentTemp;
+  dailyHumSum += currentHumidity;
+  dailyMoistSum += currentMoisture;
+  dailyCount++;
+
+  // Reset on day change
+  if (ntpSynced) {
+    int today = getDayOfMonth();
+    if (currentDay != -1 && currentDay != today) {
+      dailyTempSum = currentTemp;
+      dailyHumSum = currentHumidity;
+      dailyMoistSum = currentMoisture;
+      dailyCount = 1;
+    }
+    currentDay = today;
   }
 }
 
-// ===========================================
-// Utility Functions
-// ===========================================
+// ══════════════════════════════════════
+// HISTORY (every 5min)
+// ══════════════════════════════════════
 
-void blinkLED(int times, int delayMs) {
-  for (int i = 0; i < times; i++) {
-    digitalWrite(LED_PIN, HIGH);
-    delay(delayMs);
-    digitalWrite(LED_PIN, LOW);
-    delay(delayMs);
+void uploadHistory() {
+  if (!ntpSynced || isnan(currentTemp) || isnan(currentHumidity)) return;
+
+  FirebaseJson json;
+  json.set("dht22/temperature", currentTemp);
+  json.set("dht22/humidity", currentHumidity);
+  json.set("soilMoisture", currentMoisture);
+
+  String p = basePath() + "/history/" + getMonthKey()
+    + "/days/" + getDateKey() + "/records/" + getTimeKey();
+
+  if (Firebase.setJSON(fbdo, p, json)) {
+    Serial.printf("HIST: %s %s\n", getDateKey().c_str(), getTimeKey().c_str());
   }
 }
 
-// ===========================================
-// Token Status Callback
-// ===========================================
+// ══════════════════════════════════════
+// DAILY AVERAGE (every 15min)
+// ══════════════════════════════════════
 
-void tokenStatusCallback(token_info_t info) {
-  if (info.status == token_status_error) {
-    Serial.printf("[ERROR] Token: %s\n", info.error.message.c_str());
+void updateDailyAvg() {
+  if (!ntpSynced || dailyCount == 0) return;
+
+  float aT = ((int)((dailyTempSum / dailyCount) * 100)) / 100.0;
+  float aH = ((int)((dailyHumSum / dailyCount) * 100)) / 100.0;
+  float aM = ((int)((dailyMoistSum / dailyCount) * 100)) / 100.0;
+
+  String p = basePath() + "/history/" + getMonthKey()
+    + "/days/" + getDateKey() + "/dailyAvg";
+
+  FirebaseJson json;
+  json.set("temperature", aT);
+  json.set("humidity", aH);
+  json.set("soilMoisture", aM);
+
+  if (Firebase.setJSON(fbdo, p, json)) {
+    Serial.printf("AVG(%d): T%.1f H%.1f M%.1f\n", dailyCount, aT, aH, aM);
   }
+}
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+
+void pushAlert(const char* type, const char* msg, float val, float thresh) {
+  if (!ntpSynced) return;
+
+  String id = "alert-" + String(getEpoch()) + String(random(100, 999));
+  String p = basePath() + "/alerts/" + id;
+
+  FirebaseJson json;
+  json.set("type", type);
+  json.set("message", msg);
+  json.set("value", val);
+  json.set("threshold", thresh);
+  json.set("ts/.sv", "timestamp");
+  json.set("deviceId", DEVICE_ID);
+  json.set("source", "ESP8266");
+
+  Firebase.setJSON(fbdo, p, json);
 }
