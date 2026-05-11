@@ -172,6 +172,26 @@ class _SetupScreenState extends State<SetupScreen> {
                 
                 const SizedBox(height: 48),
 
+                  // Demo User Info
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.blueGrey.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(Icons.info_outline, color: Colors.blueGrey, size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          'Demo User: user id = "default_user", name = "velan"',
+                          style: TextStyle(color: Colors.blueGrey, fontSize: 15),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                 // User ID (Code) Field
                 _buildTextField(
                   controller: _userIdController,
